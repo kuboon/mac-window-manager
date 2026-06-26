@@ -50,7 +50,7 @@ final class RubyVM {
         let wasi = try WASIBridgeToHost(
             args: ["ruby", "-e", ""],
             environment: [:],
-            preopens: ["/": FilePath(NSHomeDirectory())]
+            preopens: ["/": NSHomeDirectory()]   // guest path : host path（String）
         )
 
         var imports = Imports()
