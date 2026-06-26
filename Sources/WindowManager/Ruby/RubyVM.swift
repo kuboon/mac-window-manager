@@ -1,33 +1,45 @@
 #if canImport(AppKit)
 import Foundation
-import SystemPackage   // FilePath（parseWasm / WASIBridgeToHost の preopens で使用）
+import SystemPackage   // FilePath（parseWasm で使用）
 import WasmKit
 import WasmKitWASI
 import WindowManagerCore
 
 /// ruby.wasm を WasmKit 上で実行し、Ruby コードの評価と Ruby⇄Swift ブリッジを担うラッパ（Part B-2）。
 ///
-/// ＝＝＝ 実装ステータス（重要）＝＝＝
-/// 本ファイルは「縦切り」の骨格であり、2 つの統合ポイントは **macOS 実機での確認が必要**:
-///   (1) WasmKit の正確な API シグネチャ（Engine/Store/Module/Imports/Function/Caller の
-///       現行版での綴り）。`Package.resolved` でピン留めしたバージョンに合わせて調整する。
-///   (2) ruby.wasm の評価エントリポイント。`@ruby/wasm-wasi`(JS) の `RubyVM` 実装が用いる
-///       `rb-abi-guest` コンポーネントのエクスポート（`rb_abi_guest_rb_eval_string_protect` 等）、
-///       または raw C-API ビルドの `rb_eval_string_protect` を、採用する ruby.wasm ビルドに合わせる。
+/// ＝＝＝ 実装ステータス ＝＝＝
+/// eval パイプライン（instantiate / 起動 / `rb-eval-string-protect` / 文字列の読み戻し /
+/// 例外検出）は **Linux スパイク（`spike/ruby-wasm`）で実証済みの ABI** に基づく。
+/// 詳細な根拠は `docs/ruby-wasm-spike.md` を参照。残る未実証ポイントは fd=3 の
+/// RPC フック（`installRpcHooks`）のみ（次セッションの de-risk 課題）。
 ///
-/// 設計上の流れ:
-///   - 起動時に WASI で `_initialize`/`_start` を実行し Ruby VM を立ち上げる。
-///   - `eval(_:)` で任意の Ruby を評価（ユーザの `~/.wmrc.rb`、キーディスパッチ式など）。
-///   - Ruby→Swift は専用 fd 上の同期 JSON-RPC（`WindowManagerCore.RpcChannel`）。Ruby の
-///     write→read の境界内で `RpcBridge.dispatch` を同期実行する。
+/// 採用ビルドは `@ruby/3.x-wasm-wasi`（reactor + WIT component `rb-abi-guest`）。
+/// 生 C-API（`rb_eval_string_protect` / `malloc`）は export されておらず、
+/// 代わりに **canonical ABI**（`cabi_realloc` での文字列受け渡し・間接 return）と
+/// **24 関数のホストシム**（`canonical_abi` 3 + `rb-js-abi-host` 21、JS 不使用なので大半 stub）を要する。
+///
+/// ⚠️ ruby.wasm の import / export 名は WIT シグネチャ付きで装飾されている
+///    （例: `rb-eval-string-protect: func(str: string) -> tuple<...>`）。
+///    完全一致では引けないため、`module.exports` を接頭辞照合して実名で解決する。
 final class RubyVM {
 
-    /// Ruby→Swift RPC に使う専用 fd 番号（Ruby 側 `wm.rb` と一致させる）。
+    /// Ruby→Swift RPC に使う専用 fd 番号（Ruby 側 `wm.rb` の `RPC_FD` と一致させる）。
+    /// NOTE: WASI の preopen は fd=3 から割り当てられるため、RPC に fd=3 を使うなら
+    ///       preopen を行わないこと（`docs/ruby-wasm-spike.md` §6）。
     static let rpcFD: Int32 = 3
+
+    /// 起動時に Ruby VM へ渡す引数（各要素 NUL 終端 / `list<string>` として lower）。
+    /// `-e_=0` は stdin 待ちを避けるためのダミースクリプト。
+    static let initArgs = ["ruby.wasm\u{0}", "-EUTF-8\u{0}", "-e_=0\u{0}"]
 
     private let engine: Engine
     private let store: Store
     private var instance: Instance!
+    private var memory: Memory!
+
+    /// guest 内に確保したリソースハンドル（`rb-abi-value`）の rep を保持する。
+    private var reps: [UInt32: UInt32] = [:]
+    private var handleCounter: UInt32 = 0
 
     /// RPC フレーミングはコア層に委譲し、ディスパッチ先だけ macOS 実装を注入する。
     private let channel = RpcChannel(dispatcher: RpcBridge.dispatch)
@@ -46,60 +58,142 @@ final class RubyVM {
     private func instantiate(wasmPath: String) throws {
         let module = try parseWasm(filePath: FilePath(wasmPath))
 
-        // WASI ブリッジ。args[0] はプログラム名。preopen でホームを見せる。
-        let wasi = try WASIBridgeToHost(
-            args: ["ruby", "-e", ""],
-            environment: [:],
-            preopens: ["/": NSHomeDirectory()]   // guest path : host path（String）
-        )
+        // WASI ブリッジ。preopen は付けない（fd=3 を RPC 用に空けるため。§6）。
+        // stdlib は ruby+stdlib.wasm に同梱されるためファイルシステムは不要。
+        let wasi = try WASIBridgeToHost(args: ["ruby"], environment: [:], preopens: [:])
 
         var imports = Imports()
         wasi.link(to: &imports, store: store)
 
-        // 専用 fd の fd_write / fd_read を RPC 用に差し替える（Part B-1）。
+        // ruby.wasm が要求する非 WASI import（canonical_abi / rb-js-abi-host）を充足する。
+        defineHostShim(from: module, into: &imports)
+
+        // 専用 fd の fd_write / fd_read を RPC 用に差し替える（Part B-1, 未実証）。
         installRpcHooks(into: &imports, wasi: wasi)
 
         self.instance = try module.instantiate(store: store, imports: imports)
+        guard let mem = instance.exports[memory: "memory"] else {
+            throw RubyVMError("ruby.wasm に memory export が無い")
+        }
+        self.memory = mem
 
-        // ruby.wasm の初期化（wizer 済みビルドは _initialize、通常は _start）。
-        if let initialize = instance.exports[function: "_initialize"] {
-            _ = try initialize()
-        } else {
-            _ = try wasi.start(instance)
+        // 起動: _initialize → ruby-init（NUL 終端引数）。ruby-init-loadpath は単独で呼ばない。
+        if let initialize = exportFunction("_initialize") { _ = try initialize([]) }
+        if let rubyInit = exportFunction("ruby-init:") {
+            let listPtr = try lowerStringList(Self.initArgs)
+            _ = try rubyInit([.i32(listPtr.ptr), .i32(listPtr.count)])
         }
     }
 
-    /// fd_write / fd_read をフックして、`rpcFD` への I/O を `channel`（→ `RpcBridge`）へ橋渡しする。
+    /// `canonical_abi` / `rb-js-abi-host` の import を、モジュール宣言の実名・実型から自動生成する。
+    /// 大半は JS 相互運用フックで、窓マネージャでは呼ばれないため stub（型に合う 0 を返す）。
+    private func defineHostShim(from module: Module, into imports: inout Imports) {
+        for imp in module.imports where imp.module == "canonical_abi" || imp.module == "rb-js-abi-host" {
+            guard case .function(let ti) = imp.descriptor else { continue }
+            let ft = module.types[Int(ti)]
+            let mod = imp.module, name = imp.name
+            let fn: (Caller, [Value]) throws -> [Value]
+            if name.hasPrefix("resource_new_rb-abi-value") {
+                fn = { [self] _, args in
+                    handleCounter += 1; reps[handleCounter] = args[0].i32; return [.i32(handleCounter)]
+                }
+            } else if name.hasPrefix("resource_get_rb-abi-value") {
+                fn = { [self] _, args in [.i32(reps[args[0].i32] ?? 0)] }
+            } else {
+                fn = { _, _ in ft.results.map { t in
+                    switch t { case .i64: return .i64(0); case .f32: return .f32(0)
+                               case .f64: return .f64(0); default: return .i32(0) }
+                } }
+            }
+            imports.define(module: mod, name: name,
+                           Function(store: store, type: ft, body: fn))
+        }
+    }
+
+    /// fd_write / fd_read をフックして `rpcFD` への I/O を `channel` へ橋渡しする（Part B-1）。
     ///
-    /// NOTE: 下記は WasmKit の Imports/Function/Caller API に合わせて実機で確定させる。
-    /// 線形メモリの読み書き（iovec 走査）も WasmKit の Memory アクセサに合わせる。
-    /// フレーミング自体はコア層（`channel.appendRequest` / `channel.dequeueResponse`）が担う。
+    /// TODO(de-risk): **未実証**。`spike/ruby-wasm` に fd フックを足して Linux で確認してから本実装する。
+    /// 方針（`docs/ruby-wasm-spike.md` §6）:
+    ///   - `wasi.link` の後に `imports.define("wasi_snapshot_preview1", "fd_write"/"fd_read"/"fd_fdstat_get")`
+    ///     で上書きし、`fd == rpcFD` のときだけ `channel.appendRequest` / `channel.dequeueResponse` に橋渡し、
+    ///     それ以外は既定 WASI に委譲する（委譲先 Function の取り回しが要点）。
+    ///   - iovec 走査は `caller.instance?.export("memory")` 経由で `Memory.withUnsafeMutableBufferPointer`。
     private func installRpcHooks(into imports: inout Imports, wasi: WASIBridgeToHost) {
-        // 擬似コード水準の意図（実機で WasmKit の型に合わせて実装）:
-        //
-        //   imports.define("wasi_snapshot_preview1", "fd_write") { caller, args in
-        //       let fd = args[0].i32
-        //       if fd == UInt32(Self.rpcFD) {
-        //           let bytes = readIOVecs(caller, iovsPtr: args[1], iovsLen: args[2])
-        //           channel.appendRequest(bytes)           // 1 行そろえば同期ディスパッチ
-        //           writeBack(caller, nwrittenPtr: args[3], n: bytes.count)
-        //           return [.i32(0)]                       // errno 0
-        //       }
-        //       return wasiFdWrite(caller, args)           // それ以外は WASI 既定へ委譲
-        //   }
-        //
-        //   imports.define("wasi_snapshot_preview1", "fd_read") { caller, args in
-        //       let fd = args[0].i32
-        //       if fd == UInt32(Self.rpcFD) {
-        //           let chunk = channel.dequeueResponse(max: …)
-        //           writeIOVecs(caller, iovsPtr: args[1], iovsLen: args[2], data: chunk)
-        //           writeBack(caller, nreadPtr: args[3], n: chunk.count)
-        //           return [.i32(0)]
-        //       }
-        //       return wasiFdRead(caller, args)
-        //   }
         _ = wasi
         _ = imports
+    }
+
+    // MARK: - 線形メモリ / canonical ABI ヘルパ
+
+    private func exportFunction(_ prefix: String) -> Function? {
+        for exp in instance.exports where exp.name.hasPrefix(prefix) {
+            if case .function(let f) = exp.value { return f }
+        }
+        return nil
+    }
+
+    private func writeBytes(_ ptr: UInt32, _ bytes: [UInt8]) {
+        memory.withUnsafeMutableBufferPointer(offset: UInt(ptr), count: bytes.count) { buf in
+            for (i, b) in bytes.enumerated() { buf[i] = b }
+        }
+    }
+
+    private func readU32(_ ptr: UInt32) -> UInt32 {
+        var v: UInt32 = 0
+        memory.withUnsafeMutableBufferPointer(offset: UInt(ptr), count: 4) { buf in
+            for i in 0..<4 { v |= UInt32(buf[i]) << (8 * i) }
+        }
+        return v
+    }
+
+    private func writeU32(_ ptr: UInt32, _ val: UInt32) {
+        writeBytes(ptr, (0..<4).map { UInt8((val >> (8 * $0)) & 0xff) })
+    }
+
+    /// `cabi_realloc(0, 0, align, size)` で guest メモリを確保する。
+    private func alloc(_ size: Int, align: Int) throws -> UInt32 {
+        guard let realloc = exportFunction("cabi_realloc") else {
+            throw RubyVMError("cabi_realloc export が無い")
+        }
+        let r = try realloc([.i32(0), .i32(0), .i32(UInt32(align)), .i32(UInt32(size))])
+        return r[0].i32
+    }
+
+    /// String を guest メモリへ書き、(ptr, len) を返す。
+    private func lowerString(_ s: String) throws -> (ptr: UInt32, count: UInt32) {
+        let bytes = Array(s.utf8)
+        let p = try alloc(bytes.count, align: 1)
+        writeBytes(p, bytes)
+        return (p, UInt32(bytes.count))
+    }
+
+    /// `list<string>` を lower し、リスト先頭 ptr と要素数を返す。
+    private func lowerStringList(_ items: [String]) throws -> (ptr: UInt32, count: UInt32) {
+        let descs = try items.map { try lowerString($0) }
+        let listPtr = try alloc(descs.count * 8, align: 4)
+        for (i, d) in descs.enumerated() {
+            writeU32(listPtr + UInt32(i * 8), d.ptr)
+            writeU32(listPtr + UInt32(i * 8 + 4), d.count)
+        }
+        return (listPtr, UInt32(descs.count))
+    }
+
+    /// `rstring-ptr` で Ruby String のハンドルを Swift String に取り出す（+ `cabi_post` 解放）。
+    private func liftRubyString(_ handle: UInt32) throws -> String {
+        guard let rstringPtr = exportFunction("rstring-ptr") else {
+            throw RubyVMError("rstring-ptr export が無い")
+        }
+        let r = try rstringPtr([.i32(handle)])
+        let area = r[0].i32
+        let ptr = readU32(area), len = readU32(area + 4)
+        var bytes = [UInt8](repeating: 0, count: Int(len))
+        memory.withUnsafeMutableBufferPointer(offset: UInt(ptr), count: Int(len)) { buf in
+            for i in 0..<Int(len) { bytes[i] = buf[i] }
+        }
+        if case .function(let post)? = instance.exports["cabi_post_rstring-ptr"] {
+            _ = try post([.i32(area)])
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     // MARK: - 評価
@@ -107,28 +201,58 @@ final class RubyVM {
     /// 任意の Ruby コードを評価する。戻り値は Ruby の結果が truthy かどうか。
     @discardableResult
     func eval(_ code: String) throws -> Bool {
-        // 実機実装の流れ:
-        //   1. `code` を UTF-8 で wasm 線形メモリへ確保（ruby.wasm の `malloc` エクスポート使用）。
-        //   2. `rb_eval_string_protect`(または rb_abi_guest 版) を invoke。
-        //   3. 戻り VALUE の truthy 判定（Qnil/Qfalse 以外なら true）。state 非0 は例外。
-        //   4. 確保したメモリを `free`。
-        try evaluateOnVM(code)
+        // truthy 判定は不透明なハンドルからは取れないため、Ruby 側で "1"/"0" に畳んで読み戻す。
+        let wrapped = "((\(code)) ? \"1\" : \"0\")"
+        let (handle, state) = try evaluateOnVM(wrapped)
+        if state != 0 {
+            let message = (try? errorMessage()) ?? "Ruby exception (state=\(state))"
+            clearError()
+            throw RubyVMError(message)
+        }
+        lastEvalTruthy = ((try? liftRubyString(handle)) == "1")
         return lastEvalTruthy
     }
 
-    private func evaluateOnVM(_ code: String) throws {
-        // TODO(on-mac): instance.exports[function: "rb_eval_string_protect"] を呼ぶ。
-        // 採用 ruby.wasm ビルドのエクスポート名・ABI に合わせて実装する。
-        _ = code
-        lastEvalTruthy = false
+    /// `rb-eval-string-protect` を呼び、(結果ハンドル, state) を返す。state 非0 は例外。
+    private func evaluateOnVM(_ code: String) throws -> (handle: UInt32, state: UInt32) {
+        guard let evalFn = exportFunction("rb-eval-string-protect") else {
+            throw RubyVMError("rb-eval-string-protect export が無い")
+        }
+        let s = try lowerString(code)
+        let r = try evalFn([.i32(s.ptr), .i32(s.count)])
+        let retptr = r[0].i32
+        return (readU32(retptr), readU32(retptr + 4))
+    }
+
+    /// 直近の Ruby 例外メッセージ（`rb-errinfo` の `.to_s`）。
+    private func errorMessage() throws -> String? {
+        guard let errinfo = exportFunction("rb-errinfo") else { return nil }
+        let r = try errinfo([])
+        return try? liftRubyString(r[0].i32)
+    }
+
+    private func clearError() {
+        if let clear = exportFunction("rb-clear-errinfo") { _ = try? clear([]) }
     }
 
     /// 起動時に同梱の Ruby ライブラリ（wm.rb）とユーザ設定（~/.wmrc.rb）を読み込む。
     func bootstrap(wmLib: String, userConfigPath: String) throws {
-        try eval(wmLib)
+        try evalRaw(wmLib)
         if let config = try? String(contentsOfFile: userConfigPath, encoding: .utf8) {
-            try eval(config)
+            try evalRaw(config)
         }
+    }
+
+    /// truthy 判定を伴わない素の eval（ライブラリ読み込み等、結果値が不要なとき）。
+    @discardableResult
+    private func evalRaw(_ code: String) throws -> UInt32 {
+        let (handle, state) = try evaluateOnVM(code)
+        if state != 0 {
+            let message = (try? errorMessage()) ?? "Ruby exception (state=\(state))"
+            clearError()
+            throw RubyVMError(message)
+        }
+        return handle
     }
 
     /// キーイベントを Ruby 側ハンドラへディスパッチし、consume するかを返す（Part B-3）。
@@ -136,5 +260,10 @@ final class RubyVM {
         let expr = "WM._dispatch_key(\(event.keyCode), \(event.flags), \(event.isKeyDown))"
         return (try? eval(expr)) ?? false
     }
+}
+
+struct RubyVMError: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
 }
 #endif
