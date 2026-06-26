@@ -9,7 +9,10 @@ CONFIG      := release
 BUILD_DIR   := .build/$(CONFIG)
 APP_BUNDLE  := $(APP_NAME).app
 CONTENTS    := $(APP_BUNDLE)/Contents
-RES_BUNDLE  := WindowManager_WindowManager.bundle   # SPM が生成するリソースバンドル名
+# SPM が生成するリソースバンドル名（<Package>_<Target>.bundle）。
+# 注意: 行末コメントは付けないこと。Make は `:=` 値の末尾空白をコメント前まで含めてしまい、
+#       パスがズレてバンドルを取りこぼす（過去にこれで .app が ruby.wasm 無しで出荷された）。
+RES_BUNDLE  := WindowManager_WindowManager.bundle
 
 # 自分用の adhoc 署名。配布時は Developer ID に置き換える。
 CODESIGN_ID ?= -
@@ -27,12 +30,23 @@ app: build
 	mkdir -p $(CONTENTS)/MacOS $(CONTENTS)/Resources
 	cp bundle/Info.plist $(CONTENTS)/Info.plist
 	cp $(BUILD_DIR)/$(APP_NAME) $(CONTENTS)/MacOS/$(APP_NAME)
-	# SPM が同梱したリソースバンドル（ruby.wasm 等）を Contents/Resources へ
-	@if [ -d "$(BUILD_DIR)/$(RES_BUNDLE)" ]; then \
-		cp -R "$(BUILD_DIR)/$(RES_BUNDLE)" "$(CONTENTS)/Resources/"; \
-	else \
-		echo "warning: resource bundle $(RES_BUNDLE) not found; check Package.swift resources"; \
-	fi
+	# SPM が同梱したリソースバンドル（ruby.wasm 等）を Contents/Resources へ。
+	# 見つからなければ **エラーで止める**（ruby.wasm 無しの壊れた .app を出荷しないため）。
+	@bundle_src="$(BUILD_DIR)/$(RES_BUNDLE)"; \
+	if [ ! -d "$$bundle_src" ]; then \
+		bundle_src="$$(swift build -c $(CONFIG) --show-bin-path)/$(RES_BUNDLE)"; \
+	fi; \
+	if [ ! -d "$$bundle_src" ]; then \
+		echo "error: resource bundle '$(RES_BUNDLE)' not found (looked in $(BUILD_DIR) and bin-path)." >&2; \
+		echo "       Package.swift の resources 宣言と Resources/ruby.wasm の配置を確認すること。" >&2; \
+		exit 1; \
+	fi; \
+	cp -R "$$bundle_src" "$(CONTENTS)/Resources/"
+	# .app に実際にバンドルが入ったか検証（取りこぼし再発防止）。
+	@test -d "$(CONTENTS)/Resources/$(RES_BUNDLE)" \
+		|| { echo "error: $(RES_BUNDLE) was not copied into the app" >&2; exit 1; }
+	@find "$(CONTENTS)/Resources/$(RES_BUNDLE)" -name ruby.wasm | grep -q . \
+		|| { echo "error: ruby.wasm missing inside the app bundle" >&2; exit 1; }
 	$(MAKE) sign
 
 sign:
