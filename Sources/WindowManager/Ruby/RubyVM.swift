@@ -23,10 +23,12 @@ import WindowManagerCore
 ///    完全一致では引けないため、`module.exports` を接頭辞照合して実名で解決する。
 final class RubyVM {
 
-    /// Ruby→Swift RPC に使う専用 fd 番号（Ruby 側 `wm.rb` の `RPC_FD` と一致させる）。
-    /// NOTE: WASI の preopen は fd=3 から割り当てられるため、RPC に fd=3 を使うなら
-    ///       preopen を行わないこと（`docs/ruby-wasm-spike.md` §6）。
-    static let rpcFD: Int32 = 3
+    /// RPC のバッキングに使う preopen のゲスト側パスとホスト側ディレクトリ。
+    /// Ruby（`wm.rb`）はこの配下の `RPC_PATH` を `File.open(_, "w+")` で開く（本物の
+    /// read-write fd を得るため。phantom fd は MRI が書込モードで開けない。§6）。
+    static let rpcGuestDir = "/rpc"
+    /// preopen dir=fd3 / stdio=0,1,2 を除いた最初の実 fd を RPC とみなす（§6-3）。
+    static let rpcFDMin: UInt32 = 4
 
     /// 起動時に Ruby VM へ渡す引数（各要素 NUL 終端 / `list<string>` として lower）。
     /// `-e_=0` は stdin 待ちを避けるためのダミースクリプト。
@@ -58,9 +60,13 @@ final class RubyVM {
     private func instantiate(wasmPath: String) throws {
         let module = try parseWasm(filePath: FilePath(wasmPath))
 
-        // WASI ブリッジ。preopen は付けない（fd=3 を RPC 用に空けるため。§6）。
-        // stdlib は ruby+stdlib.wasm に同梱されるためファイルシステムは不要。
-        let wasi = try WASIBridgeToHost(args: ["ruby"], environment: [:], preopens: [:])
+        // RPC のバッキング用に実ディレクトリを preopen する（§6）。stdlib は wasm 内蔵だが、
+        // Ruby が本物の read-write fd を得るために実在の preopen が要る。
+        let hostRpcDir = NSTemporaryDirectory() + "wmrc-rpc-\(ProcessInfo.processInfo.processIdentifier)"
+        try? FileManager.default.createDirectory(atPath: hostRpcDir,
+                                                 withIntermediateDirectories: true)
+        let wasi = try WASIBridgeToHost(args: ["ruby"], environment: [:],
+                                        preopens: [Self.rpcGuestDir: hostRpcDir])
 
         var imports = Imports()
         wasi.link(to: &imports, store: store)
@@ -68,8 +74,8 @@ final class RubyVM {
         // ruby.wasm が要求する非 WASI import（canonical_abi / rb-js-abi-host）を充足する。
         defineHostShim(from: module, into: &imports)
 
-        // 専用 fd の fd_write / fd_read を RPC 用に差し替える（Part B-1, 未実証）。
-        installRpcHooks(into: &imports, wasi: wasi)
+        // fd_write / fd_read を上書きし、RPC fd を RpcChannel に橋渡しする（Part B-1）。
+        installRpcHooks(into: &imports)
 
         self.instance = try module.instantiate(store: store, imports: imports)
         guard let mem = instance.exports[memory: "memory"] else {
@@ -110,17 +116,87 @@ final class RubyVM {
         }
     }
 
-    /// fd_write / fd_read をフックして `rpcFD` への I/O を `channel` へ橋渡しする（Part B-1）。
+    /// fd_write / fd_read を上書きし、RPC fd への I/O を `channel` へ橋渡しする（Part B-1）。
     ///
-    /// TODO(de-risk): **未実証**。`spike/ruby-wasm` に fd フックを足して Linux で確認してから本実装する。
-    /// 方針（`docs/ruby-wasm-spike.md` §6）:
-    ///   - `wasi.link` の後に `imports.define("wasi_snapshot_preview1", "fd_write"/"fd_read"/"fd_fdstat_get")`
-    ///     で上書きし、`fd == rpcFD` のときだけ `channel.appendRequest` / `channel.dequeueResponse` に橋渡し、
-    ///     それ以外は既定 WASI に委譲する（委譲先 Function の取り回しが要点）。
-    ///   - iovec 走査は `caller.instance?.export("memory")` 経由で `Memory.withUnsafeMutableBufferPointer`。
-    private func installRpcHooks(into imports: inout Imports, wasi: WASIBridgeToHost) {
-        _ = wasi
-        _ = imports
+    /// `spike/ruby-wasm`（rbrpc）で実証した方式（`docs/ruby-wasm-spike.md` §6）:
+    ///   - fd 1/2 はホスト stdout/stderr へ自前で流す（WASI への委譲は不要）。
+    ///   - fd ≥ `rpcFDMin`（= Ruby が開く実 RPC fd）は RpcChannel へ橋渡しし同期ディスパッチ。
+    ///   - iovec 走査は `caller.instance.exports[memory:]` 経由で `Memory.withUnsafeMutableBufferPointer`。
+    /// fd_fdstat_get / path_open など他の fd 操作は本物の WASI に委譲（上書きしない）。
+    private func installRpcHooks(into imports: inout Imports) {
+        let channel = self.channel
+        let rpcMin = Self.rpcFDMin
+
+        imports.define(module: "wasi_snapshot_preview1", name: "fd_write",
+                       Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(8)] }
+            let fd = args[0].i32, iovs = args[1].i32, n = args[2].i32, nwrittenPtr = args[3].i32
+            var data = Data()
+            for i in 0..<n {
+                let base = iovs + i * 8
+                let ptr = Self.loadU32(mem, base), len = Self.loadU32(mem, base + 4)
+                data.append(Self.loadBytes(mem, ptr, len))
+            }
+            switch fd {
+            case 1: FileHandle.standardOutput.write(data)
+            case 2: FileHandle.standardError.write(data)
+            case let f where f >= rpcMin: channel.appendRequest(data)
+            default: return [.i32(8)] // EBADF
+            }
+            Self.storeU32(mem, nwrittenPtr, UInt32(data.count))
+            return [.i32(0)]
+        })
+
+        imports.define(module: "wasi_snapshot_preview1", name: "fd_read",
+                       Function(store: store, parameters: [.i32, .i32, .i32, .i32], results: [.i32]) { caller, args in
+            guard let mem = caller.instance?.exports[memory: "memory"] else { return [.i32(8)] }
+            let fd = args[0].i32, iovs = args[1].i32, n = args[2].i32, nreadPtr = args[3].i32
+            guard fd >= rpcMin else {
+                if fd == 0 { Self.storeU32(mem, nreadPtr, 0); return [.i32(0)] } // stdin EOF
+                return [.i32(8)]
+            }
+            var total: UInt32 = 0
+            for i in 0..<n {
+                let base = iovs + i * 8
+                let buf = Self.loadU32(mem, base), len = Self.loadU32(mem, base + 4)
+                let chunk = channel.dequeueResponse(max: Int(len))
+                if chunk.isEmpty { break }
+                Self.storeBytes(mem, buf, chunk)
+                total += UInt32(chunk.count)
+                if chunk.count < Int(len) { break }
+            }
+            Self.storeU32(mem, nreadPtr, total)
+            return [.i32(0)]
+        })
+    }
+
+    // MARK: - Caller 内で使う Memory ヘルパ（static: フック内で self を捕捉しないため）
+
+    private static func loadU32(_ m: Memory, _ p: UInt32) -> UInt32 {
+        var v: UInt32 = 0
+        m.withUnsafeMutableBufferPointer(offset: UInt(p), count: 4) { b in
+            for i in 0..<4 { v |= UInt32(b[i]) << (8 * i) }
+        }
+        return v
+    }
+    private static func storeU32(_ m: Memory, _ p: UInt32, _ v: UInt32) {
+        m.withUnsafeMutableBufferPointer(offset: UInt(p), count: 4) { b in
+            for i in 0..<4 { b[i] = UInt8((v >> (8 * i)) & 0xff) }
+        }
+    }
+    private static func loadBytes(_ m: Memory, _ p: UInt32, _ n: UInt32) -> Data {
+        guard n > 0 else { return Data() }
+        var out = Data(count: Int(n))
+        m.withUnsafeMutableBufferPointer(offset: UInt(p), count: Int(n)) { b in
+            for i in 0..<Int(n) { out[i] = b[i] }
+        }
+        return out
+    }
+    private static func storeBytes(_ m: Memory, _ p: UInt32, _ bytes: Data) {
+        guard !bytes.isEmpty else { return }
+        m.withUnsafeMutableBufferPointer(offset: UInt(p), count: bytes.count) { b in
+            for (i, byte) in bytes.enumerated() { b[i] = byte }
+        }
     }
 
     // MARK: - 線形メモリ / canonical ABI ヘルパ
