@@ -51,11 +51,22 @@ test:
 	@test -f Sources/WindowManager/Resources/ruby.wasm || touch Sources/WindowManager/Resources/ruby.wasm
 	swift test
 
-# ruby.wasm（WASI ビルド）を取得して Resources/ に配置するヘルパ。
-# 実際の URL/バージョンは README の指示に従う（@ruby/wasm-wasi のリリース資産）。
+# ruby.wasm（reactor + WIT component の stdlib 同梱ビルド）を npm から取得して Resources/ に配置する。
+# 採用ビルドは @ruby/3.x-wasm-wasi の ruby+stdlib.wasm（wm.rb の `require "json"` 等に stdlib が必要）。
+# 詳細は docs/ruby-wasm-spike.md §1。
+RUBY_WASM_PKG ?= @ruby/3.3-wasm-wasi
+RUBY_WASM_DST := Sources/WindowManager/Resources/ruby.wasm
 fetch-ruby:
-	@echo "Place a WASI build of ruby.wasm at Sources/WindowManager/Resources/ruby.wasm"
-	@echo "See README.md > 'ruby.wasm の取得' for the exact release asset and unpacking steps."
+	@mkdir -p $(dir $(RUBY_WASM_DST))
+	@echo "Fetching $(RUBY_WASM_PKG) (ruby+stdlib.wasm) from npm ..."
+	@TARBALL=$$(curl -fsSL "https://registry.npmjs.org/$(RUBY_WASM_PKG)" \
+		| python3 -c "import sys,json;d=json.load(sys.stdin);v=d['dist-tags']['latest'];print(d['versions'][v]['dist']['tarball'])"); \
+	echo "  tarball: $$TARBALL"; \
+	TMP=$$(mktemp -d); \
+	curl -fsSL "$$TARBALL" | tar -xz -C "$$TMP" package/dist/ruby+stdlib.wasm; \
+	cp "$$TMP/package/dist/ruby+stdlib.wasm" "$(RUBY_WASM_DST)"; \
+	rm -rf "$$TMP"
+	@ls -la "$(RUBY_WASM_DST)"
 
 clean:
 	rm -rf .build $(APP_BUNDLE)
