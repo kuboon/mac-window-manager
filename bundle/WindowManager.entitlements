@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      アクセシビリティ/イベントタップを使うため Hardened Runtime は基本オフ、
+      または下記例外を付与する。自分用の開発署名(adhoc)であれば entitlements 無しでも動く。
+      配布(Notarize)する場合は Hardened Runtime を有効化し、必要な例外を精査すること。
+    -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

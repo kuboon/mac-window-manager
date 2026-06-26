@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+WindowManager.app/
+Package.resolved
+
+# ruby.wasm 本体はサイズが大きいためコミットしない（make fetch-ruby / README 参照）
+Sources/WindowManager/Resources/ruby.wasm
