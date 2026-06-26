@@ -30,10 +30,10 @@ app: build
 	mkdir -p $(CONTENTS)/MacOS $(CONTENTS)/Resources
 	cp bundle/Info.plist $(CONTENTS)/Info.plist
 	cp $(BUILD_DIR)/$(APP_NAME) $(CONTENTS)/MacOS/$(APP_NAME)
-	# SPM が同梱したリソースバンドル（ruby.wasm 等）を **.app 直下**へ置く。
-	# 重要: SwiftPM の実行ファイル向け Bundle.module アクセサは `Bundle.main.bundleURL`
-	#       （= .app ルート）の直下しか見ない。Contents/Resources では見つからず
-	#       `could not load resource bundle` で落ちる。見つからなければエラーで停止。
+	# SPM が同梱したリソースバンドル（ruby.wasm 等）を **Contents/Resources** へ置く
+	# （codesign は .app ルート直下の同梱物を許さない＝unsealed contents エラー）。
+	# アプリ側は main.swift の resourceBundle リゾルバがここを探す（Bundle.module 非依存）。
+	# 見つからなければエラーで停止（ruby.wasm 無しの壊れた .app を出荷しないため）。
 	@bundle_src="$(BUILD_DIR)/$(RES_BUNDLE)"; \
 	if [ ! -d "$$bundle_src" ]; then \
 		bundle_src="$$(swift build -c $(CONFIG) --show-bin-path)/$(RES_BUNDLE)"; \
@@ -43,11 +43,11 @@ app: build
 		echo "       Package.swift の resources 宣言と Resources/ruby.wasm の配置を確認すること。" >&2; \
 		exit 1; \
 	fi; \
-	cp -R "$$bundle_src" "$(APP_BUNDLE)/"
-	# .app 直下に実際にバンドルと ruby.wasm が入ったか検証（取りこぼし再発防止）。
-	@test -d "$(APP_BUNDLE)/$(RES_BUNDLE)" \
-		|| { echo "error: $(RES_BUNDLE) was not copied into the app root" >&2; exit 1; }
-	@find "$(APP_BUNDLE)/$(RES_BUNDLE)" -name ruby.wasm | grep -q . \
+	cp -R "$$bundle_src" "$(CONTENTS)/Resources/"
+	# .app 内に実際にバンドルと ruby.wasm が入ったか検証（取りこぼし再発防止）。
+	@test -d "$(CONTENTS)/Resources/$(RES_BUNDLE)" \
+		|| { echo "error: $(RES_BUNDLE) was not copied into the app" >&2; exit 1; }
+	@find "$(CONTENTS)/Resources/$(RES_BUNDLE)" -name ruby.wasm | grep -q . \
 		|| { echo "error: ruby.wasm missing inside the app bundle" >&2; exit 1; }
 	$(MAKE) sign
 

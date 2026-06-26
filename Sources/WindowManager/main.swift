@@ -43,10 +43,37 @@ final class AppController: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    // MARK: - リソース解決
+
+    /// SPM のリソースバンドル（`WindowManager_WindowManager.bundle`）を配置揺れに強く解決する。
+    ///
+    /// SwiftPM 既定の `Bundle.module`（実行ファイル target 版）は `Bundle.main.bundleURL`
+    /// = **.app ルート直下**しか探さない。しかし codesign は .app ルート直下の同梱物を
+    /// 許さない（"unsealed contents present in the bundle root"）。そこでバンドルは標準の
+    /// `Contents/Resources/` に置き、ここで複数の候補から自前で解決する（`Bundle.module` 非依存）。
+    private static let resourceBundle: Bundle? = {
+        let name = "WindowManager_WindowManager.bundle"
+        var bases: [URL] = []
+        if let r = Bundle.main.resourceURL { bases.append(r) }                 // .app/Contents/Resources
+        bases.append(Bundle.main.bundleURL)                                    // .app ルート / CLI ディレクトリ
+        bases.append(Bundle.main.bundleURL.appendingPathComponent("Contents/Resources"))
+        if let exe = Bundle.main.executableURL?.deletingLastPathComponent() {  // 実行ファイル隣（CLI 実行時）
+            bases.append(exe)
+        }
+        for base in bases {
+            if let bundle = Bundle(url: base.appendingPathComponent(name)) { return bundle }
+        }
+        return nil
+    }()
+
+    private func resourceURL(_ name: String, _ ext: String) -> URL? {
+        Self.resourceBundle?.url(forResource: name, withExtension: ext)
+    }
+
     // MARK: - Ruby
 
     private func startRuby() {
-        guard let wasmURL = Bundle.module.url(forResource: "ruby", withExtension: "wasm") else {
+        guard let wasmURL = resourceURL("ruby", "wasm") else {
             presentError("ruby.wasm がバンドルに見つかりません（make fetch-ruby / README 参照）。")
             return
         }
@@ -61,12 +88,14 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func loadConfig(into vm: RubyVM) throws {
         // 同梱の WM ライブラリ。
-        let wmLibURL = Bundle.module.url(forResource: "wm", withExtension: "rb")!
+        guard let wmLibURL = resourceURL("wm", "rb") else {
+            throw RubyVMError("wm.rb がバンドルに見つかりません")
+        }
         let wmLib = try String(contentsOf: wmLibURL, encoding: .utf8)
 
         // 初回起動時はサンプル設定を ~/.wmrc.rb にコピー。
         if !FileManager.default.fileExists(atPath: userConfigPath),
-           let defaultURL = Bundle.module.url(forResource: "default.wmrc", withExtension: "rb") {
+           let defaultURL = resourceURL("default.wmrc", "rb") {
             try? FileManager.default.copyItem(atPath: defaultURL.path, toPath: userConfigPath)
         }
 
