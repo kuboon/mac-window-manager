@@ -24,13 +24,12 @@ jobs:
       - name: swift test
         run: swift test
 
-  # macOS 実機向けのビルド確認（参考）。WasmKit の API ピン留めと ruby.wasm の
-  # 評価エントリポイント統合（RubyVM.swift の TODO(on-mac)）が未検証のため、
-  # ここでは結果をゲートにしない（continue-on-error）。実機で確定させたら外す。
+  # macOS 実機向けのビルド確認。WasmKit / ruby.wasm 連携の **コンパイル**を検証する。
+  # （ruby.wasm の評価エントリポイント呼び出し（RubyVM.swift の TODO(on-mac)）は
+  #  実機での動作確認が別途必要だが、ビルド自体はここで保証する。）
   macos-build:
-    name: macOS (build, informational)
+    name: macOS (build)
     runs-on: macos-14
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

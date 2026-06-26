@@ -17,7 +17,9 @@ let package = Package(
     dependencies: [
         // 純 Swift 製 WebAssembly ランタイム（ruby.wasm 作者 kateinoigakukun 製）。
         // バージョンは Mac 上で `swift package resolve` 後に Package.resolved で固定すること。
-        .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.1.0")
+        .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.1.0"),
+        // FilePath を提供（WasmKit の parseWasm / WASIBridgeToHost で使用）。macOS のみリンク。
+        .package(url: "https://github.com/apple/swift-system.git", from: "1.0.0")
     ],
     targets: [
         // MARK: - コア層（Apple フレームワーク非依存・プラットフォーム非依存）
@@ -36,7 +38,8 @@ let package = Package(
                 "WindowManagerCore",
                 // WasmKit は macOS でのみリンク（Linux ではコア層のテストに不要）。
                 .product(name: "WasmKit", package: "WasmKit", condition: .when(platforms: [.macOS])),
-                .product(name: "WasmKitWASI", package: "WasmKit", condition: .when(platforms: [.macOS]))
+                .product(name: "WasmKitWASI", package: "WasmKit", condition: .when(platforms: [.macOS])),
+                .product(name: "SystemPackage", package: "swift-system", condition: .when(platforms: [.macOS]))
             ],
             resources: [
                 // ruby.wasm 本体とデフォルト設定・Ruby ライブラリをバンドルに同梱。

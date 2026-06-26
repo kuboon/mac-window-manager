@@ -91,9 +91,9 @@ swift test    # WindowManagerCoreTests を実行（Linux / macOS 双方で可）
 
 CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）は 2 段構成:
 
-- **linux-test**（ゲート）: `swift:6.0` コンテナでコア層を `swift test`。
-- **macos-build**（参考・非ゲート）: macOS で `swift build`。WasmKit の API ピン留めと
-  ruby.wasm 統合（`RubyVM.swift` の `TODO(on-mac)`）が未検証のため、確定するまで結果はゲートにしない。
+- **linux-test**: `swift:6.0` コンテナでコア層を `swift test`（21 ケース）。
+- **macos-build**: macOS で `swift build`（WasmKit/ruby.wasm 連携の**コンパイル**を検証）。
+  ruby.wasm の評価エントリ呼び出し（`RubyVM.swift` の `TODO(on-mac)`）の**動作**確認は実機で別途行う。
 
 ### 3. 権限の付与
 

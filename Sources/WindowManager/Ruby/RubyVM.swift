@@ -1,5 +1,6 @@
 #if canImport(AppKit)
 import Foundation
+import SystemPackage   // FilePath（parseWasm / WASIBridgeToHost の preopens で使用）
 import WasmKit
 import WasmKitWASI
 import WindowManagerCore
