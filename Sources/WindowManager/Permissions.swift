@@ -1,3 +1,4 @@
+#if canImport(AppKit)
 import ApplicationServices
 import AppKit
 import CoreGraphics
@@ -40,3 +41,4 @@ enum Permissions {
         }
     }
 }
+#endif

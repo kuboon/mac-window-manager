@@ -1,3 +1,4 @@
+#if canImport(AppKit)
 import CoreGraphics
 import Foundation
 
@@ -89,3 +90,4 @@ private func eventTapCallback(proxy: CGEventTapProxy,
     let tap = Unmanaged<EventTap>.fromOpaque(userInfo).takeUnretainedValue()
     return tap.handle(type: type, event: event)
 }
+#endif

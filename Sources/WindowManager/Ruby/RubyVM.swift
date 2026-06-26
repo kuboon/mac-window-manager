@@ -1,6 +1,8 @@
+#if canImport(AppKit)
 import Foundation
 import WasmKit
 import WasmKitWASI
+import WindowManagerCore
 
 /// ruby.wasm を WasmKit 上で実行し、Ruby コードの評価と Ruby⇄Swift ブリッジを担うラッパ（Part B-2）。
 ///
@@ -15,8 +17,8 @@ import WasmKitWASI
 /// 設計上の流れ:
 ///   - 起動時に WASI で `_initialize`/`_start` を実行し Ruby VM を立ち上げる。
 ///   - `eval(_:)` で任意の Ruby を評価（ユーザの `~/.wmrc.rb`、キーディスパッチ式など）。
-///   - Ruby→Swift は専用 fd 上の同期 JSON-RPC（`RpcChannel`）。Ruby の write→read の
-///     境界内で `RpcBridge.dispatch` を同期実行する。
+///   - Ruby→Swift は専用 fd 上の同期 JSON-RPC（`WindowManagerCore.RpcChannel`）。Ruby の
+///     write→read の境界内で `RpcBridge.dispatch` を同期実行する。
 final class RubyVM {
 
     /// Ruby→Swift RPC に使う専用 fd 番号（Ruby 側 `wm.rb` と一致させる）。
@@ -25,7 +27,12 @@ final class RubyVM {
     private let engine: Engine
     private let store: Store
     private var instance: Instance!
-    private let channel = RpcChannel()
+
+    /// RPC フレーミングはコア層に委譲し、ディスパッチ先だけ macOS 実装を注入する。
+    private let channel = RpcChannel(dispatcher: RpcBridge.dispatch)
+
+    /// 直近の `eval` 結果が truthy だったか（キーディスパッチの consume 判定に使用）。
+    private(set) var lastEvalTruthy = false
 
     init(wasmPath: String) throws {
         self.engine = Engine()
@@ -38,7 +45,7 @@ final class RubyVM {
     private func instantiate(wasmPath: String) throws {
         let module = try parseWasm(filePath: FilePath(wasmPath))
 
-        // WASI ブリッジ。args[0] はプログラム名。preopen でカレントを見せる。
+        // WASI ブリッジ。args[0] はプログラム名。preopen でホームを見せる。
         let wasi = try WASIBridgeToHost(
             args: ["ruby", "-e", ""],
             environment: [:],
@@ -49,7 +56,6 @@ final class RubyVM {
         wasi.link(to: &imports, store: store)
 
         // 専用 fd の fd_write / fd_read を RPC 用に差し替える（Part B-1）。
-        // WASI が定義した同名 import を、fd を見て分岐するラッパで上書きする。
         installRpcHooks(into: &imports, wasi: wasi)
 
         self.instance = try module.instantiate(store: store, imports: imports)
@@ -62,10 +68,11 @@ final class RubyVM {
         }
     }
 
-    /// fd_write / fd_read をフックして、`rpcFD` への I/O を `RpcBridge` に橋渡しする。
+    /// fd_write / fd_read をフックして、`rpcFD` への I/O を `channel`（→ `RpcBridge`）へ橋渡しする。
     ///
     /// NOTE: 下記は WasmKit の Imports/Function/Caller API に合わせて実機で確定させる。
     /// 線形メモリの読み書き（iovec 走査）も WasmKit の Memory アクセサに合わせる。
+    /// フレーミング自体はコア層（`channel.appendRequest` / `channel.dequeueResponse`）が担う。
     private func installRpcHooks(into imports: inout Imports, wasi: WASIBridgeToHost) {
         // 擬似コード水準の意図（実機で WasmKit の型に合わせて実装）:
         //
@@ -73,9 +80,7 @@ final class RubyVM {
         //       let fd = args[0].i32
         //       if fd == UInt32(Self.rpcFD) {
         //           let bytes = readIOVecs(caller, iovsPtr: args[1], iovsLen: args[2])
-        //           channel.appendRequest(bytes)           // 1 行分そろったら…
-        //           let response = RpcBridge.dispatch(channel.takeRequest())
-        //           channel.enqueueResponse(response)      // 次の fd_read 用に保持
+        //           channel.appendRequest(bytes)           // 1 行そろえば同期ディスパッチ
         //           writeBack(caller, nwrittenPtr: args[3], n: bytes.count)
         //           return [.i32(0)]                       // errno 0
         //       }
@@ -99,7 +104,6 @@ final class RubyVM {
     // MARK: - 評価
 
     /// 任意の Ruby コードを評価する。戻り値は Ruby の結果が truthy かどうか。
-    /// （キーディスパッチで consume 判定に使うため Bool を返す簡易版）
     @discardableResult
     func eval(_ code: String) throws -> Bool {
         // 実機実装の流れ:
@@ -107,16 +111,15 @@ final class RubyVM {
         //   2. `rb_eval_string_protect`(または rb_abi_guest 版) を invoke。
         //   3. 戻り VALUE の truthy 判定（Qnil/Qfalse 以外なら true）。state 非0 は例外。
         //   4. 確保したメモリを `free`。
-        //
-        // ここでは骨格として、評価結果を RpcChannel 経由で受け取れるようにしておく。
         try evaluateOnVM(code)
-        return channel.lastEvalTruthy
+        return lastEvalTruthy
     }
 
     private func evaluateOnVM(_ code: String) throws {
         // TODO(on-mac): instance.exports[function: "rb_eval_string_protect"] を呼ぶ。
         // 採用 ruby.wasm ビルドのエクスポート名・ABI に合わせて実装する。
         _ = code
+        lastEvalTruthy = false
     }
 
     /// 起動時に同梱の Ruby ライブラリ（wm.rb）とユーザ設定（~/.wmrc.rb）を読み込む。
@@ -133,31 +136,4 @@ final class RubyVM {
         return (try? eval(expr)) ?? false
     }
 }
-
-/// Ruby→Swift RPC の同期チャネル。fd_write で積まれたリクエストを `RpcBridge` に流し、
-/// 応答を fd_read 用にバッファする。単一スレッド・同期前提のためロック不要。
-final class RpcChannel {
-    private var requestBuffer = Data()
-    private var responseBuffer = Data()
-    private(set) var lastEvalTruthy = false
-
-    /// fd_write された生バイトを受け取り、改行で 1 リクエストが揃ったら処理する。
-    func appendRequest(_ bytes: Data) {
-        requestBuffer.append(bytes)
-        while let nl = requestBuffer.firstIndex(of: 0x0A) {
-            let line = requestBuffer[requestBuffer.startIndex..<nl]
-            requestBuffer.removeSubrange(requestBuffer.startIndex...nl)
-            var response = RpcBridge.dispatch(Data(line))
-            response.append(0x0A) // Ruby 側は行単位で read する
-            responseBuffer.append(response)
-        }
-    }
-
-    /// fd_read 要求に対して、バッファ済み応答から最大 `max` バイト払い出す。
-    func dequeueResponse(max: Int) -> Data {
-        let n = Swift.min(max, responseBuffer.count)
-        let chunk = responseBuffer.prefix(n)
-        responseBuffer.removeFirst(n)
-        return Data(chunk)
-    }
-}
+#endif

@@ -1,3 +1,4 @@
+#if canImport(AppKit)
 import AppKit
 
 /// Ruby に渡すアプリ情報。
@@ -43,3 +44,4 @@ enum AppAPI {
         return app.hide()
     }
 }
+#endif

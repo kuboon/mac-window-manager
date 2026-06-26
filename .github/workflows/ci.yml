@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # クロスプラットフォームなコア層（WindowManagerCore）を Linux 上でビルド & テストする。
+  # ウィンドウ操作の純ロジック（RPC フレーミング/ワイヤフォーマット・座標変換）はここで保証される。
+  linux-test:
+    name: Linux (swift test, core)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      # ruby.wasm は容量が大きく未コミット（.gitignore 済み）。SwiftPM は宣言した
+      # リソースが存在しないとビルドに失敗するため、空のプレースホルダを置く。
+      # Linux の実行ファイルはスタブのみで ruby.wasm を読まないので空で問題ない。
+      - name: Stub ruby.wasm resource
+        run: touch Sources/WindowManager/Resources/ruby.wasm
+
+      - name: swift test
+        run: swift test
+
+  # macOS 実機向けのビルド確認（参考）。WasmKit の API ピン留めと ruby.wasm の
+  # 評価エントリポイント統合（RubyVM.swift の TODO(on-mac)）が未検証のため、
+  # ここでは結果をゲートにしない（continue-on-error）。実機で確定させたら外す。
+  macos-build:
+    name: macOS (build, informational)
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stub ruby.wasm resource
+        run: touch Sources/WindowManager/Resources/ruby.wasm
+
+      - name: swift build
+        run: swift build

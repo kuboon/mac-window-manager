@@ -1,6 +1,7 @@
 # Ruby Window Manager — ビルド & .app バンドル化
 #
-# 前提: macOS + Xcode/Swift toolchain。Linux ではビルド不可（macOS API 依存）。
+# 前提: macOS + Xcode/Swift toolchain（.app のビルドは macOS API 依存）。
+# ただし `make test` のコア層テストは Linux でも実行可能（WindowManagerCore は Apple 非依存）。
 # 事前に Resources/ruby.wasm を配置すること（make fetch-ruby か README 参照）。
 
 APP_NAME    := WindowManager
@@ -44,7 +45,10 @@ sign:
 run: app
 	open $(APP_BUNDLE)
 
+# コア層（WindowManagerCore）のユニットテスト。macOS / Linux 双方で実行可能。
+# ruby.wasm 未取得でもビルドが通るよう、空のプレースホルダを用意してから実行する。
 test:
+	@test -f Sources/WindowManager/Resources/ruby.wasm || touch Sources/WindowManager/Resources/ruby.wasm
 	swift test
 
 # ruby.wasm（WASI ビルド）を取得して Resources/ に配置するヘルパ。

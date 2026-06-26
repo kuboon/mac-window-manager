@@ -1,3 +1,4 @@
+#if canImport(AppKit)
 import AppKit
 import Foundation
 
@@ -117,3 +118,14 @@ let controller = AppController()
 app.delegate = controller
 app.setActivationPolicy(.accessory)
 app.run()
+
+#else
+
+// Linux 等の非 Apple プラットフォーム向けスタブ。
+// 本体は macOS 専用だが、クロスプラットフォームなコア層（WindowManagerCore）を
+// Linux 上で `swift test` できるよう、実行ファイルターゲットもビルド可能にしておく。
+import Foundation
+
+print("WindowManager is a macOS app. Build and run it on macOS (see README).")
+
+#endif

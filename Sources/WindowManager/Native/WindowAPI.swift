@@ -1,3 +1,4 @@
+#if canImport(AppKit)
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -151,3 +152,4 @@ enum WindowAPI {
         return pid
     }
 }
+#endif
