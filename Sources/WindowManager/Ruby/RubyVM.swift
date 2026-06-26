@@ -65,7 +65,7 @@ final class RubyVM {
         if let initialize = instance.exports[function: "_initialize"] {
             _ = try initialize()
         } else {
-            try wasi.start(instance, store: store)
+            _ = try wasi.start(instance)
         }
     }
 
