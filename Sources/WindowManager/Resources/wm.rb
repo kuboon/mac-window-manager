@@ -1,15 +1,21 @@
 # wm.rb — Ruby から macOS ウィンドウ操作を呼ぶための標準ライブラリ。
 #
-# ホスト(Swift)とは fd 3 上の行単位 JSON-RPC で同期通信する（Part B-1）。
+# ホスト(Swift)とは preopen 配下のファイル上の行単位 JSON-RPC で同期通信する（Part B-1）。
 #   送信: {"method": "...", "args": [...]}\n
 #   受信: {"ok": true, "result": ...}\n  /  {"ok": false, "error": "..."}\n
+#
+# NOTE: phantom fd（ホスト側でフックしただけの fd）は MRI が書き込みモードで開けない
+#       （`IO.new(3,"r+")` は Errno::EINVAL）。そこで RubyVM が preopen した実ディレクトリ
+#       配下のファイルを開き、本物の read-write fd を得る。その fd の I/O を RubyVM が
+#       フックして RpcChannel へ橋渡しする（詳細は docs/ruby-wasm-spike.md §6）。
 #
 # Swift の RubyVM がブートストラップ時にこのファイルを eval する。
 
 require "json"
 
 module WM
-  RPC_FD = 3
+  # RubyVM が preopen するゲスト側ディレクトリ（RubyVM.rpcGuestDir = "/rpc"）配下のソケット相当。
+  RPC_PATH = "/rpc/sock"
 
   class Error < StandardError; end
 
@@ -17,7 +23,7 @@ module WM
     # --- 低レベル RPC -------------------------------------------------------
 
     def _io
-      @io ||= IO.new(RPC_FD, "r+")
+      @io ||= File.open(RPC_PATH, "w+")
     end
 
     def call(method, *args)

@@ -20,9 +20,14 @@ TARBALL=$(curl -sS https://registry.npmjs.org/@ruby/3.3-wasm-wasi \
 curl -sSL "$TARBALL" | tar -xz          # -> package/dist/ruby+stdlib.wasm
 
 # 2) 実行
-swift run -c release rbexp package/dist/ruby+stdlib.wasm puts     # eval して puts
-swift run -c release rbexp package/dist/ruby+stdlib.wasm imports  # import 一覧（ホストシムの全量）
-swift run -c release rbexp package/dist/ruby+stdlib.wasm exports  # export 一覧（eval エントリ等）
+# rbexp: eval パイプライン（puts / 状態永続化 / 例外 / 文字列読み戻し）
+swift run -c release rbexp package/dist/ruby+stdlib.wasm puts
+swift run -c release rbexp package/dist/ruby+stdlib.wasm imports  # ホストシムの全量
+swift run -c release rbexp package/dist/ruby+stdlib.wasm exports  # eval エントリ等
+
+# rbrpc: fd ベース RPC ラウンドトリップ（Ruby が JSON-RPC を fd で送受信）
+swift run -c release rbrpc package/dist/ruby+stdlib.wasm
+#   期待: "ROUNDTRIP_OK"（move -> [12,100,200], windows -> []）
 ```
 
 期待される `puts` 出力（抜粋）:

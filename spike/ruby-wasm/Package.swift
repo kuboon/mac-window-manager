@@ -22,6 +22,15 @@ let package = Package(
                 .product(name: "WasmKitWASI", package: "WasmKit"),
                 .product(name: "SystemPackage", package: "swift-system")
             ]
+        ),
+        // fd ベース RPC ラウンドトリップ（Ruby⇄Swift）の de-risk。
+        .executableTarget(
+            name: "rbrpc",
+            dependencies: [
+                .product(name: "WasmKit", package: "WasmKit"),
+                .product(name: "WasmKitWASI", package: "WasmKit"),
+                .product(name: "SystemPackage", package: "swift-system")
+            ]
         )
     ]
 )

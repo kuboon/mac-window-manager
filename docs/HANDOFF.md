@@ -44,25 +44,23 @@ Swift 再ビルドなしに `~/.wmrc.rb` を編集して微調整できること
 | ネイティブ Swift ラッパ（`WindowAPI`/`ScreenAPI`/`AppAPI`/`EventTap`/`Permissions`） | ✅ macOS で**コンパイル**は通る |
 | `RubyVM`（WasmKit インスタンス化）| ✅ **Linux スパイクで動作実証**（`spike/ruby-wasm`） |
 | ruby.wasm の評価エントリ呼び出し | ✅ **実証済み**（`rb-eval-string-protect` / 状態永続化 / 例外 / 文字列読み戻し）。ABI 確定し `RubyVM.swift` に実装 |
-| RPC フック（fd=3, `installRpcHooks`）| ❌ **未実証**（次の de-risk。`docs/ruby-wasm-spike.md` §6。fd=3 は WASI preopen と衝突する点に注意） |
+| RPC フック（`installRpcHooks`）| ✅ **Linux スパイク（rbrpc）で往復実証**。`IO.new(3)` は不可と判明し、preopen 配下の実ファイル方式に修正（`docs/ruby-wasm-spike.md` §6）。`RubyVM` / `wm.rb` 実装済み |
 | 実機でのウィンドウ操作・キーイベント consume | ❌ **未検証**（要 Mac + アクセシビリティ権限） |
 
-> ⚠️ eval パイプラインは Linux スパイクで実証済みだが、`RubyVM.swift` 本体（macOS gate）は
+> ⚠️ eval＋RPC は Linux スパイクで実証済みだが、`RubyVM.swift` 本体（macOS gate）は
 > Linux でコンパイルできないため、スパイクと同一の WasmKit API を逐語移植している。
-> RPC フックのみ TODO(de-risk) のまま。
+> macOS ビルドの最終確認は CI / 実機で。
 
 ## 3. 次にやること（優先順）
 
-> 旧 1〜3（egress 許可 / `puts` de-risk / `evaluateOnVM` 実装）は **完了**。
+> 旧 1〜3（egress / `puts` de-risk / `evaluateOnVM`）＋ RPC フックの de-risk は **完了**。
 > egress は開通済み（ただし git clone と release-assets ホストは遮断。`docs/ruby-wasm-spike.md` 末尾参照）。
-> `evaluateOnVM` は実装済み。残タスク:
+> eval＋RPC とも Linux スパイクで実証し、`RubyVM.swift` / `wm.rb` に反映済み。残タスク:
 
-1. **RPC ラウンドトリップ（fd フック）を Linux スパイクで de-risk**。`spike/ruby-wasm` に
-   fd_write/fd_read のフックを足し、Ruby（`wm.rb` 相当）→ `RpcChannel` → 応答の往復を実証する。
-   **fd=3 は WASI preopen と衝突する**ため preopen を外す or RPC fd を変える（`docs/ruby-wasm-spike.md` §6）。
-   通ったら `RubyVM.installRpcHooks` を本実装。
+1. **（要 Mac）縦切りの動作確認**: `WM.windows` / `WM.move` と `default.wmrc.rb` のキーリマップ。
+   `installRpcHooks` の fd 識別（§6-3「fd≥4」簡易ルール）を実機構成で確認・堅牢化する。
 2. **（推奨アーキ）Ruby ランタイム層をクロスプラットフォーム target に分離**し、eval＋RPC を
-   **CI（Linux）でテスト**できるようにする（WasmKit は Linux で動く）。`docs/ruby-wasm-spike.md` 末尾参照。
+   **CI（Linux）でテスト**できるようにする（WasmKit は Linux で動く。`rbrpc` がそのまま雛形）。
 3. ruby.wasm 本体を取得して `Sources/WindowManager/Resources/ruby.wasm` に配置（§4）。
    **採用ビルドは `@ruby/3.x-wasm-wasi` の `ruby+stdlib.wasm`**（npm 取得可。wasip1 スタンドアロンは
    常駐 eval 不可なので不適 — `docs/ruby-wasm-spike.md` §1）。
