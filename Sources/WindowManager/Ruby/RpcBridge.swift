@@ -68,6 +68,15 @@ enum RpcBridge {
         case "hide_app":
             return RpcProtocol.ok(AppAPI.hide(pid: pid_t(RpcProtocol.int(args, 0))))
 
+        // --- 永続 KV ストア（WM.save / WM.load）---
+        case "store_get":
+            return RpcProtocol.ok(KVStore.get(RpcProtocol.string(args, 0)) ?? NSNull())
+
+        case "store_set":
+            let value: Any = args.count > 1 ? args[1] : NSNull()
+            KVStore.set(RpcProtocol.string(args, 0), value)
+            return RpcProtocol.ok(true)
+
         default:
             return RpcProtocol.error("unknown method: \(method)")
         }

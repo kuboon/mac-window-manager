@@ -67,6 +67,12 @@ module WM
     def activate(pid)           = call("activate", pid)
     def hide_app(pid)           = call("hide_app", pid)
 
+    # --- 永続ストレージ（ホスト側 JSON ファイル）----------------------------
+    # 再起動をまたいで残る KV ストア。value は JSON 化可能な値（配列/ハッシュ/数値/文字列）。
+    # 例: WM.save("layout:#{sig}", snapshot) / WM.load("layout:#{sig}")
+    def save(key, value) = call("store_set", key, value)
+    def load(key)        = call("store_get", key)
+
     # 便利関数: ウィンドウを指定スクリーンの可視領域に対する割合で配置する。
     # 例: tile(win_id, 0.0, 0.0, 0.5, 1.0) で左半分。
     def tile(window_id, fx, fy, fw, fh, screen: screens.first)
@@ -100,9 +106,21 @@ module WM
       @handlers ||= []
     end
 
+    # --- ディスプレイ構成変更フック ----------------------------------------
+    # 外部ディスプレイの接続/切断・配置・解像度変更で呼ばれる。ブロックは現在の
+    # screens 配列を 1 引数で受け取る。AppKit は 1 操作で複数回通知しうるので冪等に。
+    def on_screens_changed(&block)
+      screen_handlers << block
+    end
+
+    def screen_handlers
+      @screen_handlers ||= []
+    end
+
     # 設定リロード時にハンドラを初期化するために呼ぶ。
     def reset!
       @handlers = []
+      @screen_handlers = []
     end
 
     def normalize_mods(mods)
@@ -130,6 +148,16 @@ module WM
       false
     rescue => e
       warn "WM key handler error: #{e.class}: #{e.message}"
+      false
+    end
+
+    # Swift(AppController) からディスプレイ構成変更時に呼ばれる。
+    def _on_screens_changed
+      scr = screens
+      screen_handlers.each { |h| h.call(scr) }
+      true
+    rescue => e
+      warn "WM screens handler error: #{e.class}: #{e.message}"
       false
     end
   end

@@ -57,6 +57,13 @@ public enum RpcProtocol {
         return fallback
     }
 
+    /// `i` 番目の引数を `String` として取り出す（範囲外・非文字列は `fallback`）。
+    public static func string(_ args: [Any], _ i: Int, fallback: String = "") -> String {
+        guard i < args.count else { return fallback }
+        if let s = args[i] as? String { return s }
+        return fallback
+    }
+
     // MARK: - レスポンス整形
 
     /// `{"ok": true, "result": <result>}` を返す。`result` は JSON 化可能な値。

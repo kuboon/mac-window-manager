@@ -26,6 +26,20 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         startRuby()
         startEventTap()
+        observeScreenChanges()
+    }
+
+    // MARK: - ディスプレイ構成変更
+
+    /// 外部ディスプレイの接続/切断・配置・解像度変更を Ruby（`WM._on_screens_changed`）へ通知する。
+    /// AppKit は 1 回の変更で複数回通知することがあるので、Ruby 側ハンドラは冪等に書く想定。
+    private func observeScreenChanges() {
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            _ = try? self?.rubyVM?.eval("WM._on_screens_changed")
+        }
     }
 
     // MARK: - メニューバー
