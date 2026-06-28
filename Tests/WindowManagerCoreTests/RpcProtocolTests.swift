@@ -49,6 +49,12 @@ final class RpcProtocolTests: XCTestCase {
         XCTAssertEqual(RpcProtocol.bool([], 0, fallback: false), false)
     }
 
+    func testStringCoercion() {
+        XCTAssertEqual(RpcProtocol.string(["layout:abc"], 0), "layout:abc")
+        XCTAssertEqual(RpcProtocol.string([], 0), "")                   // 範囲外は既定の ""
+        XCTAssertEqual(RpcProtocol.string([42], 0, fallback: "x"), "x") // 非文字列は fallback
+    }
+
     /// JSON 経由で来た数値（NSNumber）も正しく強制できること。
     func testCoercionFromJSONNumbers() throws {
         let req = try XCTUnwrap(RpcProtocol.parse(Data(#"{"method":"move","args":[42,10.5,true]}"#.utf8)))
