@@ -70,11 +70,11 @@ enum RpcBridge {
 
         // --- 永続 KV ストア（WM.save / WM.load）---
         case "store_get":
-            return RpcProtocol.ok(Store.get(RpcProtocol.string(args, 0)) ?? NSNull())
+            return RpcProtocol.ok(KVStore.get(RpcProtocol.string(args, 0)) ?? NSNull())
 
         case "store_set":
             let value: Any = args.count > 1 ? args[1] : NSNull()
-            Store.set(RpcProtocol.string(args, 0), value)
+            KVStore.set(RpcProtocol.string(args, 0), value)
             return RpcProtocol.ok(true)
 
         default:

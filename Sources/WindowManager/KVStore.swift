@@ -6,7 +6,7 @@ import Foundation
 /// WASI 上の Ruby は `/rpc` 以外のファイルへ書けないため、永続化はホスト側で行う。
 /// `store_set` / `store_get`（`RpcBridge`）の実体。値は JSON 化可能な任意の構造
 /// （Ruby 側の `WM.save(key, value)` / `WM.load(key)`）。アプリはサンドボックス無効前提。
-enum Store {
+enum KVStore {
 
     /// 保存先: ~/Library/Application Support/WindowManager/state.json
     private static let fileURL: URL = {
