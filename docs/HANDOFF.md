@@ -1,141 +1,138 @@
-# 引き継ぎ文書 (2026-06-26)
+# 引き継ぎ文書 (2026-06-28)
 
-別セッションで作業を継続するための申し送り。まずこの文書 → `docs/ruby-wasm-spike.md`
-→ `README.md` → `docs/macos-window-api.md` の順に読むと全体像が掴める。
+別セッションで作業を継続するための申し送り。まずこの文書 → `README.md` →
+`docs/wmrc-guide.md`（Ruby で設定を書く資料）→ `docs/ruby-wasm-spike.md`（ランタイムの内部）
+→ `docs/macos-window-api.md`（OS API）の順に読むと全体像が掴める。
 
-> **2026-06-26 追記（de-risk セッション）**: 最大の未知だった「ruby.wasm が WasmKit 上で
-> 起動して `puts` できるか」を **Linux で実証**（Wasmtime 差し替えは不要）。
-> eval パイプライン（起動・eval・状態永続化・例外・文字列読み戻し）の ABI を確定し、
-> `Sources/WindowManager/Ruby/RubyVM.swift` を実装に更新。再現は `spike/ruby-wasm/`、
-> 確定事実と次手は **`docs/ruby-wasm-spike.md`** に集約。残る未実証は fd=3 RPC フックのみ。
+> **状態（2026-06-28）**: **実機（Apple Silicon / macOS）で動作する `v0.1.0` をリリース済み。**
+> ruby.wasm 起動・eval・fd RPC・AX でのウィンドウ操作・キーリマップ＋consume まで一通り実機確認済み。
+> すべての修正は `main` にマージ済み（PR #1〜#5）。CI でタグ push（`v*`）すると `.app` を
+> ビルドして GitHub Release に添付する。
 
 ## 0. プロジェクト概要（1 行）
 
 Ruby (ruby.wasm) で挙動を記述・ホットリロードできる Swift 製 macOS ウィンドウマネージャ。
-Swift 再ビルドなしに `~/.wmrc.rb` を編集して微調整できることが目的。
+Swift 再ビルドなしに `~/.wmrc.rb` を編集 → メニューの Reload で微調整できる。
 
-## 1. いまどこまで来たか
+## 1. いまどこまで来たか（実機で動く）
 
-- **ブランチ**: `claude/swift-macos-ruby-wasm-yq7vfp`（このブランチで開発を続ける）
-- **PR**: kuboon/mac-window-manager **#1**（ドラフト）
-- **CI**: `.github/workflows/ci.yml` の 2 ジョブとも **緑**
-  - `Linux (swift test, core)` … `swift:6.0` コンテナでコア層を `swift test` → **21 テスト合格**
-  - `macOS (build)` … `swift build` が WasmKit/ruby.wasm 連携含めて**コンパイル成功**
+- **配布**: GitHub Release **`v0.1.0`** に `WindowManager.app.zip`（adhoc 署名 / 未公証）。
+- **CI**（`.github/workflows/ci.yml`）3 ジョブ:
+  - `Linux (swift test, core)` … `swift:6.0` でコア層を `swift test`（緑）
+  - `macOS (build)` … `swift build`（コンパイルゲート、緑）
+  - `macOS (.app release)` … タグ push（`v*`）or 手動実行で `make app` → `.app` を Release/artifact 化
+- **実機で確認済みの縦切り**: 起動 → `wm.rb`+`~/.wmrc.rb` を eval（`[wmrc] loaded` 表示）→
+  `WM.windows` 等の RPC → `WM.tile`/`move`/`resize` で AX 操作 → `⌘⌥←/→/↑` でタイル＋consume。
 
-### 直近のセッションでやったこと
-1. **Linux でテスト可能にする構造変更**（本題）
-   - Apple 非依存の純ロジックを新ライブラリ **`WindowManagerCore`** に分離
-     （`RpcChannel` / `RpcProtocol` / `GeometryMath`）。dispatcher を注入式にして macOS API と切り離した。
-   - macOS 固有ソースは全て `#if canImport(AppKit)` で囲い、**WasmKit / swift-system を
-     macOS 限定リンク**に。Linux ではコア層＋実行ファイルのスタブのみビルドされる。
-   - `App.swift` → `main.swift` に改名（top-level コードは `main.swift` のみ許可）＋ Linux 用スタブ entry point。
-   - `WindowManagerCoreTests`（XCTest）を追加。
-   - CI を 2 段化（Linux=ゲート、macOS=ゲート）。
-2. **WasmKit グルーの既存バグを 3 件修正**（CI が示すたびに対応。いずれも Linux 化とは無関係の skeleton 起因）
-   - `FilePath` を `import SystemPackage` せず使用 → import 追加 + swift-system 依存追加
-   - `WASIBridgeToHost` の `preopens` は `[String: String]`（`FilePath` ではない）
-   - 現行 WasmKit の `wasi.start(_:)` は `store:` 引数を取らない
+### このプロジェクトで踏んで解決した壁（時系列）
+1. **Linux でテスト可能な構造**: Apple 非依存の純ロジックを `WindowManagerCore`
+   （`RpcChannel`/`RpcProtocol`/`GeometryMath`）に分離。macOS 固有は `#if canImport(AppKit)`。
+2. **ruby.wasm × WasmKit の de-risk**（`docs/ruby-wasm-spike.md`）: 採用ビルドは
+   `@ruby/3.x-wasm-wasi` の `ruby+stdlib.wasm`（WIT component / reactor）。eval・状態永続化・例外・
+   文字列読み戻しを Linux スパイク（`spike/ruby-wasm/rbexp`）で実証。Wasmtime 差し替えは不要。
+3. **fd ベース RPC**: phantom fd は MRI が書込モードで開けない（`IO.new(3,"r+")`→EINVAL）と判明。
+   **preopen した実ディレクトリ配下のファイル**（`/rpc/sock`）を開いて本物の read-write fd を得る方式に。
+   `RubyVM.installRpcHooks` が fd_write/fd_read をフックして `RpcChannel` へ橋渡し（`rbrpc` で実証）。
+4. **CI で `.app` ビルド & Release**: タグ push / `workflow_dispatch` の `tag` 入力で Release 作成。
+5. **パッケージング修正**:
+   - Makefile の `RES_BUNDLE` 行末コメントで Make が値に末尾空白を含め、リソースバンドルを
+     取りこぼし → `.app` が ruby.wasm 無しで起動クラッシュ。コメント別行化＋欠落時はエラーで停止。
+   - `Bundle.module`（実行ファイル版）は `.app` ルート直下しか探さないが、codesign はルート直下の
+     同梱物を拒否（unsealed contents）。→ `main.swift` に自前リゾルバを入れ `Contents/Resources` 配置に。
+6. **実機の挙動修正**: 矢印/F キーは OS が fn(0x800000) ビットを自動付与するため、`RELEVANT_MODS` に
+   fn を含めると `⌘⌥←` が一致しなかった → 照合を cmd/shift/alt/ctrl の 4 つに限定（`wm.rb`）。
 
-## 2. 検証済み / 未検証（正直な現状）
+## 2. 検証済み（実機で確認）
 
 | 項目 | 状態 |
 |---|---|
-| コア層ロジック（RPC フレーミング/整形・座標反転） | ✅ Linux/macOS の CI で `swift test` 緑 |
-| ネイティブ Swift ラッパ（`WindowAPI`/`ScreenAPI`/`AppAPI`/`EventTap`/`Permissions`） | ✅ macOS で**コンパイル**は通る |
-| `RubyVM`（WasmKit インスタンス化）| ✅ **Linux スパイクで動作実証**（`spike/ruby-wasm`） |
-| ruby.wasm の評価エントリ呼び出し | ✅ **実証済み**（`rb-eval-string-protect` / 状態永続化 / 例外 / 文字列読み戻し）。ABI 確定し `RubyVM.swift` に実装 |
-| RPC フック（`installRpcHooks`）| ✅ **Linux スパイク（rbrpc）で往復実証**。`IO.new(3)` は不可と判明し、preopen 配下の実ファイル方式に修正（`docs/ruby-wasm-spike.md` §6）。`RubyVM` / `wm.rb` 実装済み |
-| 実機でのウィンドウ操作・キーイベント consume | ❌ **未検証**（要 Mac + アクセシビリティ権限） |
+| コア層（RPC フレーミング/整形・座標反転） | ✅ Linux/macOS CI で `swift test` 緑 |
+| ruby.wasm 起動 + eval（状態永続化/例外/文字列読み戻し） | ✅ Linux スパイク + **実機** |
+| fd RPC ラウンドトリップ（Ruby⇄Swift） | ✅ Linux スパイク（`rbrpc`）+ **実機**（`WM.tile`→move/resize） |
+| ネイティブ AX 操作（move/resize/raise/minimize/activate/hide） | ✅ **実機**（`⌘⌥←/→/↑` でタイル確認） |
+| キーイベントタップ → Ruby ディスパッチ → consume | ✅ **実機** |
+| `.app` の CI ビルド & GitHub Release | ✅ `v0.1.0` 公開済み |
 
-> ⚠️ eval＋RPC は Linux スパイクで実証済みだが、`RubyVM.swift` 本体（macOS gate）は
-> Linux でコンパイルできないため、スパイクと同一の WasmKit API を逐語移植している。
-> macOS ビルドの最終確認は CI / 実機で。
+## 3. 次にやること（候補）
 
-## 3. 次にやること（優先順）
+縦切りは完成。ここからは仕上げ/拡張:
 
-> 旧 1〜3（egress / `puts` de-risk / `evaluateOnVM`）＋ RPC フックの de-risk は **完了**。
-> egress は開通済み（ただし git clone と release-assets ホストは遮断。`docs/ruby-wasm-spike.md` 末尾参照）。
-> eval＋RPC とも Linux スパイクで実証し、`RubyVM.swift` / `wm.rb` に反映済み。残タスク:
-
-1. **（要 Mac）縦切りの動作確認**: `WM.windows` / `WM.move` と `default.wmrc.rb` のキーリマップ。
-   `installRpcHooks` の fd 識別（§6-3「fd≥4」簡易ルール）を実機構成で確認・堅牢化する。
-2. **（推奨アーキ）Ruby ランタイム層をクロスプラットフォーム target に分離**し、eval＋RPC を
-   **CI（Linux）でテスト**できるようにする（WasmKit は Linux で動く。`rbrpc` がそのまま雛形）。
-3. ruby.wasm 本体を取得して `Sources/WindowManager/Resources/ruby.wasm` に配置（§4）。
-   **採用ビルドは `@ruby/3.x-wasm-wasi` の `ruby+stdlib.wasm`**（npm 取得可。wasip1 スタンドアロンは
-   常駐 eval 不可なので不適 — `docs/ruby-wasm-spike.md` §1）。
-4. （要 Mac）縦切りの動作確認: `WM.windows` / `WM.move` と、サンプルのキーリマップ（`default.wmrc.rb`）。
+1. **配布の公証**: 現状 adhoc 署名（未公証）で、他 Mac では初回「右クリック→開く」or
+   `xattr -dr com.apple.quarantine` が要る。Developer ID 署名 + notarization を入れるなら、
+   証明書・Apple ID を **GitHub Secrets** に登録し `ci.yml` の sign/notarize ステップを追加する。
+2. **（推奨アーキ）Ruby ランタイム層をクロスプラットフォーム target に分離**し、`rbrpc` 相当を
+   **CI（Linux）の自動テスト**にする（WasmKit は Linux で動く）。回帰検出に有効。
+3. **機能拡張**: スペース/Mission Control 連携、ウィンドウ間フォーカス移動、複数ディスプレイ運用、
+   設定 DSL の拡充など。Ruby 側（`wm.rb` の API / `~/.wmrc.rb`）で足せるものはホットリロードで試せる。
+4. **権限まわりの UX**: 入力監視/画面収録の案内、権限未付与時のフォールバック表示。
 
 ## 4. ローカルでのビルド/テスト手順
 
 ```sh
 # コア層テスト（macOS / Linux 双方で可）。ruby.wasm 未取得でも通る（Makefile が空ファイルを stub）。
-make test            # == touch Resources/ruby.wasm; swift test
+make test                 # == touch Resources/ruby.wasm; swift test
 
-# macOS で .app を作る（要 Mac）
-make app             # swift build → WindowManager.app 組み立て + adhoc 署名
-make run
+# ruby.wasm 本体を取得して配置（npm から ruby+stdlib.wasm を取得）。
+make fetch-ruby           # -> Sources/WindowManager/Resources/ruby.wasm
 
-# ruby.wasm 本体（未コミット, .gitignore 済み）。GH リリース or npm から取得して配置:
-#   Sources/WindowManager/Resources/ruby.wasm
+# macOS で .app を作る（要 Mac）。ruby.wasm 配置 → swift build -c release → .app 組み立て + adhoc 署名。
+make app
+make run                  # open WindowManager.app
 ```
 
-- **ruby.wasm を resource 宣言しているため未配置だと `swift build` が失敗する**。CI と Makefile は
-  空ファイルを `touch` して回避している（中身は動作には要るが、コンパイル/テストには不要）。
+- **ruby.wasm は未コミット（.gitignore 済み）**。resource 宣言しているため未配置だと `swift build` 失敗。
+  CI/Makefile の `test` は空ファイルを `touch` して回避（中身は動作には要るがコンパイル/テストには不要）。
+- **CI からのリリース**: `git tag v0.1.0 && git push origin v0.1.0`、もしくは Actions から
+  `ci.yml` を `workflow_dispatch`（`tag` 入力）で実行 → `macos-app` ジョブが Release に `.app` を添付。
 
-## 5. 必要な egress ホワイトリスト（環境構築用）
+## 5. egress（環境構築メモ）
 
-`download.swift.org` だけでは不足。**SwiftPM が依存を GitHub から clone する**ため GitHub 系も必須
-（WasmKit を macOS 限定リンクにしても、依存の clone 自体は Linux でも走る）。
+SwiftPM 依存は GitHub から clone される（WasmKit / swift-system / swift-argument-parser）。Linux で
+ローカルビルドするなら下記が要る。GitHub Actions はフルネットワークで問題なし。
 
-**必須**
-- `download.swift.org` … Swift ツールチェイン tarball
-- `github.com` … `swiftwasm/WasmKit`・`apple/swift-system`（+推移依存）の clone
-- `codeload.github.com` … git archive/clone 実体
-- `objects.githubusercontent.com` … GH リリース/LFS アセット
-
-**たぶん既に開いている**（前回 base apt は通った。落ちたのは不要な PPA のみ）
-- `archive.ubuntu.com`, `security.ubuntu.com` … apt の system ライブラリ
-
-**任意**: `swift.org`/`www.swift.org`（swiftly 利用・署名検証時）, `raw.githubusercontent.com`
-
-**追加不要**（プロキシの noProxy で素通し済み）: `registry.npmjs.org`（ruby.wasm を npm 取得する場合）, `pypi.org`, `index.crates.io` ほか
-
-検証に使った tarball URL（swiftly なしの手動 install）:
-```
-https://download.swift.org/swift-6.0.3-release/ubuntu2404/swift-6.0.3-RELEASE/swift-6.0.3-RELEASE-ubuntu24.04.tar.gz
-```
-> 注意: この環境ではプロキシが `download.swift.org` を 403 で遮断していたため Swift を入れられず、
-> 検証は GitHub Actions（フルネットワーク）で実施した。egress が開けばローカルで同じ緑を再現可能。
+- 必須: `download.swift.org`（Swift tarball）, `github.com` / `codeload.github.com`（依存 clone・tarball）
+- ruby.wasm 取得: **`registry.npmjs.org`**（`@ruby/3.3-wasm-wasi` の `ruby+stdlib.wasm`）
+- 注意（このプロジェクトの web 開発環境特有）: git clone がプロキシで 403 になる環境では、依存を
+  tarball で vendoring する必要がある（`spike/ruby-wasm/README.md` のベンダリング手順）。
+  GitHub Releases の実体ホスト `release-assets.githubusercontent.com` も塞がれていたため、ruby.wasm は
+  npm 経由で取得した。
 
 ## 6. リポジトリ地図
 
 ```
-Package.swift                         … 3 ターゲット（Core / 実行ファイル / Core テスト）。WasmKit・swift-system は macOS 限定
-Makefile                              … build / app / test / sign（test は ruby.wasm を stub）
-.github/workflows/ci.yml              … Linux(swift test) + macOS(build)
-docs/macos-window-api.md              … OS API インベントリ（要件「全機能をパラメタ付きで列挙」）
-docs/ruby-wasm-spike.md               … ★ruby.wasm×WasmKit の de-risk 結果と確定 ABI（次セッション必読）
-spike/ruby-wasm/                      … 上記の再現コード（Linux/macOS 双方で `swift run`）
+Package.swift                         … 3 ターゲット（Core / 実行ファイル / Core テスト）。WasmKit・swift-system は macOS 限定リンク
+Makefile                              … build / app / sign / fetch-ruby / test
+.github/workflows/ci.yml              … Linux(test) + macOS(build) + macOS(.app release: タグ/手動でリリース)
+docs/
+  wmrc-guide.md                       … ★Ruby で ~/.wmrc.rb を書くための API リファレンス（agent 向け資料）
+  ruby-wasm-spike.md                  … ruby.wasm×WasmKit の de-risk 結果・確定 ABI・RPC 設計
+  macos-window-api.md                 … OS API インベントリ
+spike/ruby-wasm/                      … de-risk 再現コード（rbexp=eval, rbrpc=fd RPC）。Linux/macOS で `swift run`
 Sources/
-  WindowManagerCore/                  … Apple 非依存・Linux テスト対象
-    RpcChannel.swift                  … fd 上の同期 RPC フレーミング（dispatcher 注入）
-    RpcProtocol.swift                 … パース/整形/引数の型強制
-    GeometryMath.swift                … bottom-left ⇄ top-left 反転（純ロジック）
+  WindowManagerCore/                  … Apple 非依存・Linux テスト対象（RpcChannel / RpcProtocol / GeometryMath）
   WindowManager/                      … macOS 専用（全ファイル #if canImport(AppKit)）
-    main.swift                        … @main 相当（top-level）+ Linux スタブ
+    main.swift                        … エントリ + メニューバー + 起動順 + リソースリゾルバ（Bundle.module 非依存）
     Native/ WindowAPI/ScreenAPI/AppAPI/EventTap/Geometry.swift
-    Ruby/  RubyVM.swift（★TODO on-mac）, RpcBridge.swift
+    Ruby/  RubyVM.swift（ruby.wasm 起動・eval・fd RPC フック）, RpcBridge.swift（メソッド振り分け）
     Permissions.swift
-    Resources/ wm.rb, default.wmrc.rb, (ruby.wasm: 未コミット)
+    Resources/ wm.rb（WM ライブラリ）, default.wmrc.rb（サンプル設定）, (ruby.wasm: 未コミット)
 Tests/WindowManagerCoreTests/         … RpcChannel/RpcProtocol/GeometryMath のテスト
 bundle/ Info.plist, WindowManager.entitlements
 ```
 
 ## 7. 落とし穴メモ
 
-- **座標系**: AppKit=bottom-left / CG・AX=top-left。変換は `GeometryMath`（純）＋ `Geometry`（NSScreen ラッパ）の 1 箇所のみ。Ruby へ渡す座標は top-left 統一。
-- **権限**: アクセシビリティ（AX 操作・イベントタップ必須）、画面収録（ウィンドウタイトル）、入力監視。`Permissions.swift` 参照。
-- **CGWindowID → AXUIElement** の対応付けに private シンボル `_AXUIElementGetWindow` を使用（`WindowAPI.swift`）。yabai 等と同様。OS 更新で消えるリスクは低いが private。
-- **RPC は fd=3**。Ruby 側（`wm.rb`）と Swift 側（`RubyVM.rpcFD`）で番号を一致させること。
+- **座標系**: AppKit=bottom-left / CG・AX=top-left。変換は `GeometryMath`（純）＋ `Geometry`（NSScreen ラッパ）。
+  Ruby へ渡す/から受ける座標は **top-left 統一**。
+- **権限**: アクセシビリティ（AX 操作・イベントタップに必須）、画面収録（ウィンドウタイトル取得）、
+  入力監視（環境により必要）。`Permissions.swift` 参照。未付与だと `WM.windows` が空/操作が false。
+- **CGWindowID → AXUIElement** に private シンボル `_AXUIElementGetWindow` を使用（`WindowAPI.swift`）。
+  yabai 等と同様。OS 更新で消えるリスクは低いが private。
+- **RPC は preopen ファイル経由**（旧 `IO.new(3)` ではない）。Ruby 側 `wm.rb` の `RPC_PATH = "/rpc/sock"`
+  と Swift 側 `RubyVM.rpcGuestDir = "/rpc"` を一致させること。fd 識別は「fd≥4 を RPC」の簡易ルール
+  （`docs/ruby-wasm-spike.md` §6）。Ruby 側が他に実ファイル I/O をしない前提で成立。
+- **修飾キーの fn**: 矢印/F キーは OS が fn ビットを自動付与する。照合は cmd/shift/alt/ctrl のみ
+  （`wm.rb` の `RELEVANT_MODS`）。fn を修飾キーとしては使えない。
+- **ターミナル起動で出力が見える**: `./WindowManager.app/Contents/MacOS/WindowManager` だと Ruby の
+  `puts`/`warn`/例外が標準出力に出る（`open` 起動だと見えない）。デバッグに有用。
 - WasmKit の API は版で揺れる。`Package.resolved`（Mac で生成）でピン留めしてから実装を合わせる。
