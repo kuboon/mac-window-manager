@@ -110,7 +110,11 @@ module WM
     end
 
     # 関心のある修飾ビットだけを抽出するマスク。
-    RELEVANT_MODS = MOD.values.reduce(0, :|)
+    # 注意: fn(secondaryFn 0x800000) は **矢印キーや F キーを押すと OS が自動で立てる**ため、
+    #       これを判定対象に含めると `WM.on_key(KEY_LEFT, [:cmd, :alt])` のような矢印
+    #       ショートカットが「fn も押された」扱いになり一致しなくなる（numericPad 0x200000 も同様）。
+    #       そこで照合には cmd/shift/alt/ctrl の 4 つだけを使う（fn は明示的な修飾キーとしては非対応）。
+    RELEVANT_MODS = MOD[:cmd] | MOD[:shift] | MOD[:alt] | MOD[:ctrl]
 
     # Swift(EventTap) から各キーイベントごとに呼ばれるディスパッチャ。
     # 戻り値 true で consume（イベントを他アプリへ渡さない）。

@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "このタグで GitHub Release を作成し .app を添付（例: v0.1.0）。空ならビルド成果物のみ。"
+        required: false
+        default: ""
 
 jobs:
   # クロスプラットフォームなコア層（WindowManagerCore）を Linux 上でビルド & テストする。
@@ -72,12 +77,15 @@ jobs:
           path: WindowManager.app.zip
           if-no-files-found: error
 
+      # タグ push（v*）、または workflow_dispatch で tag 入力があれば Release を作成・更新する。
+      # 後者は runner 内で gh がタグを作成するため、ローカルからの tag push が不要。
       - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.tag }}
         run: |
           notes=$'WindowManager.app（adhoc 署名 / 未公証）。\n\n初回起動: 右クリック→開く、または\n  xattr -dr com.apple.quarantine WindowManager.app\nアクセシビリティ等の権限はシステム設定で付与してください。'
-          gh release create "${GITHUB_REF_NAME}" WindowManager.app.zip \
-            --title "${GITHUB_REF_NAME}" --notes "$notes" \
-          || gh release upload "${GITHUB_REF_NAME}" WindowManager.app.zip --clobber
+          gh release create "$TAG" WindowManager.app.zip \
+            --title "$TAG" --notes "$notes" \
+          || gh release upload "$TAG" WindowManager.app.zip --clobber
