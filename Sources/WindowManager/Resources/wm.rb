@@ -130,11 +130,24 @@ module WM
       @any_handlers ||= []
     end
 
+    # --- ウィンドウのドラッグ&ドロップ（観測専用 / snap 用）-----------------
+    # 他アプリのウィンドウをマウスでドラッグして離した瞬間に呼ばれる。
+    # ブロックは ev = { window:, x:, y: } を受け取る（x,y は top-left グローバルなカーソル位置）。
+    # consume はしない（OS の通常移動はそのまま）。端への吸着(snap)等を Ruby 側で実装する。
+    def on_drag_end(&block)
+      drag_handlers << block
+    end
+
+    def drag_handlers
+      @drag_handlers ||= []
+    end
+
     # 設定リロード時にハンドラを初期化するために呼ぶ。
     def reset!
       @handlers = []
       @screen_handlers = []
       @any_handlers = []
+      @drag_handlers = []
     end
 
     def normalize_mods(mods)
@@ -177,6 +190,16 @@ module WM
       true
     rescue => e
       warn "WM screens handler error: #{e.class}: #{e.message}"
+      false
+    end
+
+    # Swift(AppController) からウィンドウのドロップ時に呼ばれる。
+    def _on_drag_end(window_id, x, y)
+      ev = { window: window_id, x: x, y: y }
+      drag_handlers.each { |h| h.call(ev) }
+      true
+    rescue => e
+      warn "WM drag handler error: #{e.class}: #{e.message}"
       false
     end
   end
