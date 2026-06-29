@@ -117,6 +117,21 @@ module WM
       @screen_handlers ||= []
     end
 
+    # --- Space（Mission Control の仮想デスクトップ）切替フック --------------
+    # アクティブ Space が切り替わると呼ばれる（public 通知 activeSpaceDidChange ベース）。
+    # ブロックは「切替先＝今アクティブな Space に出ている窓」の配列を 1 引数で受け取る。
+    # 注意:
+    #   - これは「切り替わった」事実だけを伝える。「どの Space か（番号/ID）」や「別 Space に
+    #     ある窓」は public API に無いため取得できない（private SkyLight が必要）。
+    #   - 渡される窓一覧は WM.windows と同じで、実質「今アクティブな Space の on-screen 窓」。
+    def on_space_changed(&block)
+      space_handlers << block
+    end
+
+    def space_handlers
+      @space_handlers ||= []
+    end
+
     # --- 生キーフック（モード/リーダーキー等を Ruby 側で自由に組むための最小の口）-----
     # 全キーイベントを受け取る。keyDown だけでなく keyUp / 修飾キー変化でも呼ばれる
     # （`ev[:key_down]` で判別）。`on_key` の照合より **先に** 評価され、truthy を返すと
@@ -146,6 +161,7 @@ module WM
     def reset!
       @handlers = []
       @screen_handlers = []
+      @space_handlers = []
       @any_handlers = []
       @drag_handlers = []
     end
@@ -190,6 +206,16 @@ module WM
       true
     rescue => e
       warn "WM screens handler error: #{e.class}: #{e.message}"
+      false
+    end
+
+    # Swift(AppController) からアクティブ Space 切替時に呼ばれる。
+    def _on_space_changed
+      wins = windows
+      space_handlers.each { |h| h.call(wins) }
+      true
+    rescue => e
+      warn "WM space handler error: #{e.class}: #{e.message}"
       false
     end
 

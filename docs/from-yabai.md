@@ -1,33 +1,32 @@
 ---
-title: yabai / AeroSpace から
+title: yabai から
 nav_order: 3
 ---
 
-[← ホーム]({{ '/' | relative_url }}) ・ [API リファレンス]({{ '/wmrc-guide' | relative_url }})
+[← ホーム]({{ '/' | relative_url }}) ・ [API リファレンス]({{ '/wmrc-guide' | relative_url }}) ・ [AeroSpace から]({{ '/from-aerospace' | relative_url }})
 
-# yabai / AeroSpace から乗り換える
+# yabai から乗り換える
 
-このページは、既存のタイル型ウィンドウマネージャ（[yabai](https://github.com/koekeishiya/yabai) +
-[skhd](https://github.com/koekeishiya/skhd) / [AeroSpace](https://github.com/nikitabobko/AeroSpace)）の
+[yabai](https://github.com/koekeishiya/yabai) + [skhd](https://github.com/koekeishiya/skhd) の
 **標準的な設定が、このシステムでどう書けるか**の対応集。
 
 ## 前提: 思想の違い
 
-- yabai / AeroSpace は **自動タイリング（BSP ツリー）＋ワークスペース** を持つ「完成品の WM」。
-  設定ファイルは「その WM の挙動を選ぶ」もの。
+- yabai は **自動タイリング（BSP ツリー）** を持つ「完成品の WM」。設定ファイルは「その WM の挙動を選ぶ」もの。
+  さらに scripting addition を入れると Spaces 操作まで踏み込む（SIP の一部無効化が前提）。
 - 本システムは **Ruby の基盤**。ウィンドウ操作・キー入力・永続化の最小プリミティブだけを提供し、
   レイアウトやモードの「振る舞い」は**あなたが Ruby で書く**。
 - したがって:
-  - **キーバインド＋ウィンドウ操作（focus / move / resize / fullscreen / tile）は素直に移植できる**。
-  - **自動 BSP タイリングと Spaces/ワークスペースは 1:1 にはならない**（後述）。前者は Ruby で
-    自前のレイアウトを組める。後者は現状プリミティブ未提供。
+  - **キーバインド＋ウィンドウ操作（focus / warp / resize / fullscreen / tile）は素直に移植できる**。
+  - **自動 BSP タイリングと Spaces は 1:1 にはならない**（後述）。前者は Ruby で自前のレイアウトを組める。
+    後者は private API（yabai と同じ世界）が必要なので現状プリミティブ未提供。
 
 > キーコードは US 物理位置。一覧は [API リファレンス]({{ '/wmrc-guide' | relative_url }})。
 > 修飾キーは `:cmd :shift :alt :ctrl`（fn は不可）。
 
 ## まず: 共通ヘルパー（`~/.wmrc.rb` に置く）
 
-yabai/AeroSpace の「方向フォーカス / 方向移動 / リサイズ」をこのシステムで実現する小道具。
+yabai の「方向フォーカス / 方向 warp / リサイズ」をこのシステムで実現する小道具。
 ジオメトリ（`WM.windows`）から方向の隣を探す純 Ruby。
 
 ```ruby
@@ -52,14 +51,14 @@ def cur_and_neighbor(dir)
   [cur, nb]
 end
 
-# 方向フォーカス（focus west/east/...）
+# 方向フォーカス（window --focus west/east/...）
 def focus_dir(dir)
   _cur, nb = cur_and_neighbor(dir)
   return unless nb
   WM.activate(nb["pid"]); WM.raise_window(nb["id"])
 end
 
-# 方向移動（warp / move：隣のウィンドウと位置を入れ替える）
+# 方向移動（window --warp：隣のウィンドウと位置を入れ替える）
 def swap_dir(dir)
   cur, nb = cur_and_neighbor(dir)
   return unless cur && nb
@@ -79,7 +78,7 @@ def fullscreen; id = WM.focused_window; WM.tile(id, 0, 0, 1, 1) if id; end
 def half(fx);   id = WM.focused_window; WM.tile(id, fx, 0, 0.5, 1) if id; end
 ```
 
-## yabai + skhd → このシステム
+## `~/.skhdrc` → `~/.wmrc.rb`
 
 `~/.skhdrc` の典型例（左）と等価な `~/.wmrc.rb`（右）。
 
@@ -97,49 +96,15 @@ def half(fx);   id = WM.focused_window; WM.tile(id, fx, 0, 0.5, 1) if id; end
 （H=0x04, J=0x26, K=0x28, L=0x25, F=0x03。`yabairc` の `layout bsp` / gaps / padding に当たる
 「自動整列」は本システムには無いので、必要なら下の「自前タイリング」を参照。）
 
-## AeroSpace → このシステム
-
-`~/.aerospace.toml`（左）と等価な `~/.wmrc.rb`（右）。**AeroSpace の `mode`（モード）**は、本システムの
-`WM.on_any_key`（リーダーキー）にそのまま対応する。
-
-| `~/.aerospace.toml` | `~/.wmrc.rb` |
-|---|---|
-| `alt-h = 'focus left'` | `WM.on_key(0x04, [:alt]) { focus_dir(:left); true }` |
-| `alt-shift-h = 'move left'` | `WM.on_key(0x04, [:shift,:alt]) { swap_dir(:left); true }` |
-| `alt-f = 'fullscreen'` | `WM.on_key(0x03, [:alt]) { fullscreen; true }` |
-| `alt-1 = 'workspace 1'` | ⏳ ワークスペース未対応（後述） |
-| `[mode.service]` / `mode service` で入る | `WM.on_any_key` によるモード（下記） |
-
-**モード（AeroSpace の service モード相当）** は状態変数 ＋ `on_any_key` で:
-
-```ruby
-mode = nil
-WM.on_any_key do |ev|
-  next false unless ev[:key_down]
-  if mode == :service
-    case ev[:keycode]
-    when 0x0F then fullscreen; mode = nil   # r = 例として最大化（任意の操作を割り当て）
-    when 0x35 then mode = nil               # Esc = mode main へ戻る
-    else mode = nil
-    end
-    next true
-  end
-  # 注: 設定リロード（AeroSpace の reload-config）は Ruby からは呼べない。メニュー ▸ Reload config（⌘R）で。
-  # alt-shift-; で service モードへ（; = 0x29）。修飾ビットは WM.normalize_mods で作る。
-  if ev[:keycode] == 0x29 && ev[:mods] == WM.normalize_mods([:alt, :shift])
-    mode = :service; puts "-- service: r=fullscreen Esc=exit"; next true
-  end
-  false
-end
-```
-（より作り込んだリーダーキーの雛形は
-[API リファレンスのレシピ]({{ '/wmrc-guide' | relative_url }})。）
-
 ## まだ 1:1 にならないもの（正直な現状）
 
-- **Spaces / ワークスペース切替**: macOS の Spaces 操作は private な CGS API が必要で、現状 RPC 未提供。
-  → 将来プリミティブ（`WM.space_focus` 等）を足せば対応可能。それまでは「アプリの前面化
-  （`WM.activate`）」で擬似的に切り替える程度。
+- **Spaces（Mission Control の仮想デスクトップ）切替**: macOS の Spaces 操作は private な
+  SkyLight/CGS API が必要で、yabai も scripting addition（SIP 一部無効化）でこれを叩いている。
+  本システムは現状 RPC 未提供。→ 将来プリミティブ（`WM.space_focus` 等）を足せば対応可能。
+  なお「Space が**切り替わった**こと」の検出だけなら public 通知で安価に足せる（`WM.on_space_changed`
+  構想）。詳細は [API リファレンス]({{ '/wmrc-guide' | relative_url }})。
+  Spaces を**使わず**ワークスペースを再現する手は [AeroSpace から]({{ '/from-aerospace' | relative_url }})
+  の「仮想ワークスペース」を参照（`move` で画面外退避するだけ。private API 不要）。
 - **自動 BSP タイリング（ツリー管理）**: 本システムは手動配置（`move`/`resize`/`tile`）。
   「常に隙間なく自動整列」は付いてこない。ただし `WM.windows` を読んで**自前のレイアウトを Ruby で
   組める**（下記）。
@@ -163,5 +128,5 @@ WM.on_key(0x11, [:cmd, :alt]) { tile_all_columns; true }   # ⌘⌥T
 
 ---
 
-> このページは「よくある設定」を中心にした出発点です。あなたの yabai/AeroSpace 設定で
+> このページは「よくある設定」を中心にした出発点です。あなたの yabai 設定で
 > 「これはどう書く？」があれば Issue へ。レシピを増やしていきます。

@@ -25,8 +25,8 @@ end
   `xattr -dr com.apple.quarantine WindowManager.app`）。アクセシビリティ権限を付与して起動。
 - **設定を書く**: [API リファレンス]({{ '/wmrc-guide' | relative_url }}) に `WM` の全 API・修飾キー・
   キーコード表・レシピ・落とし穴がまとまっている。これ 1 枚で `~/.wmrc.rb` が書ける。
-- **乗り換え**: [yabai / AeroSpace から]({{ '/coming-from-yabai-aerospace' | relative_url }}) — 既存の
-  tiling WM の設定がこのシステムでどう書けるかの対応表。
+- **乗り換え**: [yabai から]({{ '/from-yabai' | relative_url }}) / [AeroSpace から]({{ '/from-aerospace' | relative_url }})
+  — 既存の tiling WM の設定がこのシステムでどう書けるかの対応表。
 
 ## 設計思想
 
@@ -44,5 +44,6 @@ end
 | アプリの前面化 / 非表示、一覧、画面一覧、フォーカス取得 | ✅ |
 | キーのリマップ＋consume、モード/リーダーキー | ✅（Ruby で） |
 | ドラッグで snap（端へ吸着）— `WM.on_drag_end` | ✅（Ruby で） |
-| ディスプレイ抜き差しイベント、再起動をまたぐ永続保存 | ✅ |
-| 自動 BSP タイリング（ツリー管理）、Spaces/ワークスペース切替 | ⏳ 未提供（Ruby でレイアウトを組むことは可能。Spaces は新プリミティブが必要） |
+| ディスプレイ抜き差しイベント、Space 切替イベント、再起動をまたぐ永続保存 | ✅ |
+| 自動 BSP タイリング（ツリー管理） | ⏳ 未提供（`WM.windows` を読んで Ruby で自前レイアウトは組める） |
+| native Spaces の操作（切替先 Space の特定 / 別 Space の窓列挙 / 窓を別 Space へ移動） | ⏳ 未提供（private SkyLight が必要。ワークスペース体験は AeroSpace 風の画面外退避で Ruby 再現可） |
