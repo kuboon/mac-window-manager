@@ -97,7 +97,9 @@ module WM
     }.freeze
 
     # キーハンドラ登録。keycode は仮想キーコード、mods は [:cmd, :alt] 等。
-    # ブロックが truthy を返すと、そのキーイベントは握りつぶされる（リマップ）。
+    # マッチしたキーは**デフォルトで consume される**（＝他アプリへ渡さない / リマップ）。
+    # ブロックが**明示的に `false` を返したときだけ**素通りさせる（OS の通常動作に任せる）。
+    # nil やその他の戻り値（WM.tile 等の戻り値も含む）は consume 扱い。
     def on_key(keycode, mods = [], &block)
       handlers << { keycode: keycode, mods: normalize_mods(mods), block: block }
     end
@@ -191,7 +193,8 @@ module WM
         next unless h[:keycode] == keycode && h[:mods] == active_mods
         ev = { keycode: keycode, flags: flags, mods: active_mods }
         result = h[:block].call(ev)
-        return true if result # truthy なら consume
+        # マッチしたらデフォルト consume。明示的に false を返したときだけ次の候補へ（=素通り）。
+        return true unless result == false
       end
       false
     rescue => e
