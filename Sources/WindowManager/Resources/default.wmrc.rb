@@ -16,12 +16,14 @@ def focused
   WM.focused_window
 end
 
+# NOTE: on_key にマッチしたキーは**デフォルトで consume される**（他アプリへ渡さない）。
+#       末尾に true を書く必要はない。OS の通常動作を残したいときだけブロックで false を返す。
+
 # Cmd+Opt+Left … フォーカス中ウィンドウを画面の左半分へ。
 WM.on_key(KEY_LEFT, [:cmd, :alt]) do
   if (id = focused)
     WM.tile(id, 0.0, 0.0, 0.5, 1.0)
   end
-  true # イベントを consume（他アプリへ渡さない）
 end
 
 # Cmd+Opt+Right … 右半分へ。
@@ -29,7 +31,6 @@ WM.on_key(KEY_RIGHT, [:cmd, :alt]) do
   if (id = focused)
     WM.tile(id, 0.5, 0.0, 0.5, 1.0)
   end
-  true
 end
 
 # Cmd+Opt+Up … 画面いっぱい（最大化風）。
@@ -37,7 +38,6 @@ WM.on_key(KEY_UP, [:cmd, :alt]) do
   if (id = focused)
     WM.tile(id, 0.0, 0.0, 1.0, 1.0)
   end
-  true
 end
 
 # --- ディスプレイ構成ごとのレイアウト保存/復元 -------------------------------
@@ -61,7 +61,6 @@ WM.on_key(KEY_S, [:cmd, :alt]) do
   end
   WM.save("layout:#{layout_signature}", snapshot)
   puts "[wmrc] saved #{snapshot.size} windows for [#{layout_signature}]"
-  true
 end
 
 # Cmd+Opt+R … 保存レイアウトを復元。app + title でウィンドウを照合して move/resize。
@@ -80,7 +79,6 @@ WM.on_key(KEY_R, [:cmd, :alt]) do
     restored += 1
   end
   puts "[wmrc] restored #{restored}/#{saved.size} windows for [#{layout_signature}]"
-  true
 end
 
 # --- 外部ディスプレイ接続/切断で自動モード切替 -------------------------------
