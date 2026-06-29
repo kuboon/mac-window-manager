@@ -30,7 +30,24 @@ final class AppController: NSObject, NSApplicationDelegate {
         startRuby()
         startEventTap()
         observeScreenChanges()
+        observeSpaceChanges()
         observeWindowDrags()
+    }
+
+    // MARK: - Space（仮想デスクトップ）切替
+
+    /// アクティブ Space の切替を Ruby（`WM._on_space_changed`）へ通知する。
+    /// public 通知なので private API も SIP 緩和も不要。「どの Space か」は分からない
+    /// （public API に無い）ので、Ruby 側は発火後に `WM.windows` で新アクティブ Space の窓を見る。
+    /// NOTE: この通知は `NSWorkspace.shared.notificationCenter` 限定（既定の NotificationCenter
+    ///       には来ない）。
+    private func observeSpaceChanges() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            _ = try? self?.rubyVM?.eval("WM._on_space_changed")
+        }
     }
 
     // MARK: - ディスプレイ構成変更

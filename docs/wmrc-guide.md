@@ -195,6 +195,31 @@ end
   現状なし（将来 Swift 側オーバーレイで対応予定）。
 - `WM.reset!`（Reload 時）でクリア。
 
+### 2.9 Space（仮想デスクトップ）切替フック `WM.on_space_changed`
+
+Mission Control の**アクティブ Space が切り替わった**ときに呼ばれるハンドラ。public 通知
+（`activeSpaceDidChange`）ベースなので **private API も SIP 緩和も不要**。
+
+```ruby
+WM.on_space_changed do |wins|
+  # wins は「切替先＝今アクティブな Space に出ている窓」の配列（WM.windows と同じ形）
+  # 例: この Space に来たら特定レイアウトを当て直す
+end
+```
+- ブロックは**切替先 Space の窓一覧**を 1 引数で受け取る（`WM.windows` と同じ）。
+- **できないこと（重要な制約）**:
+  - 「**どの** Space か」（番号/ID）は分からない。public API に無いため。
+  - 「**別の**（今見えていない）Space にある窓」は列挙できない。取れるのは常に
+    **アクティブ Space の窓**だけ。
+  - どちらも private SkyLight（yabai が使う層）が必要で、本システムは未提供。
+- `WM.space_handlers` で登録済み一覧、`WM.reset!`（Reload 時）でクリア。
+
+> 補足: 「フォーカス窓を隣の Space へ移動」のような **Space 操作**は、private SkyLight
+> （`SLSMoveWindowsToManagedSpaces` 等。SIP 緩和は不要な層）が必要で現状未提供。Raycast 等は
+> この層を使っている。native Spaces を**使わず**ワークスペースを再現したい場合は
+> [AeroSpace から]({{ '/from-aerospace' | relative_url }}) の「仮想ワークスペース」（`WM.move` で
+> 画面外退避）を参照。
+
 ---
 
 ## 3. 修飾キー（mods）
