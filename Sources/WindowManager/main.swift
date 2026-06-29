@@ -1,5 +1,6 @@
 #if canImport(AppKit)
 import AppKit
+import CoreGraphics
 import Foundation
 
 /// メニューバー常駐アプリ本体（Part C）。
@@ -8,6 +9,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var rubyVM: RubyVM?
     private var eventTap: EventTap?
+    private var dragMonitor: Any?
+    private var draggedWindowID: CGWindowID?
 
     private var userConfigPath: String {
         (NSHomeDirectory() as NSString).appendingPathComponent(".wmrc.rb")
@@ -27,6 +30,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         startRuby()
         startEventTap()
         observeScreenChanges()
+        observeWindowDrags()
     }
 
     // MARK: - ディスプレイ構成変更
@@ -39,6 +43,34 @@ final class AppController: NSObject, NSApplicationDelegate {
             object: nil, queue: .main
         ) { [weak self] _ in
             _ = try? self?.rubyVM?.eval("WM._on_screens_changed")
+        }
+    }
+
+    // MARK: - ウィンドウのドラッグ（snap 用の観測フック）
+
+    /// 他アプリのウィンドウをマウスでドラッグして離した瞬間に Ruby（`WM._on_drag_end`）へ通知する。
+    /// **観測専用**（イベントは消費しない＝OS の通常移動はそのまま）。Ruby 側で端への吸着(snap)等を実装する。
+    /// 動かしている窓は「ドラッグ開始時の前面ウィンドウ」とみなす。
+    private func observeWindowDrags() {
+        dragMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDragged, .leftMouseUp]
+        ) { [weak self] event in
+            guard let self = self else { return }
+            switch event.type {
+            case .leftMouseDragged:
+                // ドラッグ中の最初のイベントで対象ウィンドウを確定（前面＝ドラッグ中の窓）。
+                if self.draggedWindowID == nil {
+                    self.draggedWindowID = WindowAPI.focusedWindowID()
+                }
+            case .leftMouseUp:
+                guard let id = self.draggedWindowID else { return }
+                self.draggedWindowID = nil
+                // カーソルの現在位置（top-left グローバル。CG/AX と同じ座標系）。
+                let p = CGEvent(source: nil)?.location ?? .zero
+                _ = try? self.rubyVM?.eval("WM._on_drag_end(\(id), \(p.x), \(p.y))")
+            default:
+                break
+            }
         }
     }
 

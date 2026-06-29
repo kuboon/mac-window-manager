@@ -178,6 +178,23 @@ end
 - 複数登録可。登録順に評価し、最初に truthy を返したものが consume する。
 - `WM.reset!`（Reload 時）でクリア。**モード状態は自前の変数で持つ**（下の §5 レシピ参照）。
 
+### 2.8 ドラッグ&ドロップ `WM.on_drag_end`（snap の土台）
+
+他アプリのウィンドウを**マウスでドラッグして離した瞬間**に呼ばれる**観測専用**フック。
+端への吸着（snap）などを Ruby 側で実装するための入口。
+
+```ruby
+WM.on_drag_end do |ev|
+  # ev = { window:, x:, y: }  （x,y は top-left グローバルなカーソル位置）
+  # ev[:window] はドラッグしていたウィンドウ id（ドラッグ開始時の前面ウィンドウ）
+end
+```
+- **consume しない**ので、OS の通常のウィンドウ移動はそのまま行われ、その後に好きな配置へ寄せる
+  （= ドロップ位置を見て `WM.tile` で吸着）。
+- 1 ドラッグにつき**ドロップ時に 1 回**だけ呼ばれる（軽い）。ドラッグ中のリアルタイム・プレビューは
+  現状なし（将来 Swift 側オーバーレイで対応予定）。
+- `WM.reset!`（Reload 時）でクリア。
+
 ---
 
 ## 3. 修飾キー（mods）
@@ -351,6 +368,40 @@ end
 - 「**F1,t で抜ける版**」「**留まって連打できる版**」は `mode = nil` の有無だけ。
 - **サブモード**は `mode = :leader_g` のような別状態にして `case` を増やすだけ。
 - 自動タイムアウトは無し（ランタイムにタイマーが無い）。抜けるのは「キー実行」「Esc」「未割り当てキー」。
+
+### ドラッグで snap（端へ吸着 / Windows・Rectangle 風）
+
+`on_any_key` のマウス版 `WM.on_drag_end`（§2.8）。ウィンドウを**ドラッグして離した位置**で
+画面端・隅を判定し、`WM.tile` で吸着する。consume しないので通常のドラッグ移動と共存する。
+
+```ruby
+EDGE = 24   # 端とみなす余白（pt）
+
+WM.on_drag_end do |ev|
+  win = ev[:window]
+  x, y = ev[:x], ev[:y]
+  # カーソルが乗っているスクリーンを選ぶ
+  s = WM.screens.find { |sc| x.between?(sc["x"], sc["x"] + sc["w"]) &&
+                             y.between?(sc["y"], sc["y"] + sc["h"]) } || WM.screens.first
+  next unless s
+  left   = x <= s["x"] + EDGE
+  right  = x >= s["x"] + s["w"] - EDGE
+  top    = y <= s["y"] + EDGE
+  bottom = y >= s["y"] + s["h"] - EDGE
+
+  if top && left      then WM.tile(win, 0.0, 0.0, 0.5, 0.5)   # 左上 1/4
+  elsif top && right  then WM.tile(win, 0.5, 0.0, 0.5, 0.5)   # 右上 1/4
+  elsif bottom && left  then WM.tile(win, 0.0, 0.5, 0.5, 0.5) # 左下 1/4
+  elsif bottom && right then WM.tile(win, 0.5, 0.5, 0.5, 0.5) # 右下 1/4
+  elsif left   then WM.tile(win, 0.0, 0.0, 0.5, 1.0)          # 左半分
+  elsif right  then WM.tile(win, 0.5, 0.0, 0.5, 1.0)          # 右半分
+  elsif top    then WM.tile(win, 0.0, 0.0, 1.0, 1.0)          # 上端 → 最大化
+  end
+  # どの端でもなければ何もしない（ドロップ位置のまま）
+end
+```
+- ゾーンの形（隅で 1/4、上で最大化…）も `EDGE` も全部この Ruby で自由に変えられる。
+- メニューバー/Dock を避けたいなら `visible_x/visible_y/visible_w/visible_h` を使って判定する。
 
 ---
 
