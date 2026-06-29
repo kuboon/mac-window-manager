@@ -25,8 +25,8 @@ end
   `xattr -dr com.apple.quarantine WindowManager.app`）。アクセシビリティ権限を付与して起動。
 - **設定を書く**: [API リファレンス]({{ '/wmrc-guide' | relative_url }}) に `WM` の全 API・修飾キー・
   キーコード表・レシピ・落とし穴がまとまっている。これ 1 枚で `~/.wmrc.rb` が書ける。
-- **乗り換え**: [yabai / AeroSpace から]({{ '/coming-from-yabai-aerospace' | relative_url }}) — 既存の
-  tiling WM の設定がこのシステムでどう書けるかの対応表。
+- **乗り換え**: [yabai から]({{ '/from-yabai' | relative_url }}) / [AeroSpace から]({{ '/from-aerospace' | relative_url }})
+  — 既存の tiling WM の設定がこのシステムでどう書けるかの対応表。
 
 ## 設計思想
 

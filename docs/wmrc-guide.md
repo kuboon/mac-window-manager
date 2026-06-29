@@ -3,7 +3,7 @@ title: API リファレンス
 nav_order: 2
 ---
 
-[← ホーム]({{ '/' | relative_url }}) ・ [yabai / AeroSpace から]({{ '/coming-from-yabai-aerospace' | relative_url }})
+[← ホーム]({{ '/' | relative_url }}) ・ [yabai から]({{ '/from-yabai' | relative_url }}) ・ [AeroSpace から]({{ '/from-aerospace' | relative_url }})
 
 # `~/.wmrc.rb` スクリプティングガイド（Ruby API リファレンス）
 
