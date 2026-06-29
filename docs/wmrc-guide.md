@@ -1,3 +1,10 @@
+---
+title: API リファレンス
+nav_order: 2
+---
+
+[← ホーム]({{ '/' | relative_url }}) ・ [yabai / AeroSpace から]({{ '/coming-from-yabai-aerospace' | relative_url }})
+
 # `~/.wmrc.rb` スクリプティングガイド（Ruby API リファレンス）
 
 このファイルは **coding agent / 人間が `~/.wmrc.rb` を書くための完全な資料**。これと
@@ -152,6 +159,25 @@ WM.load(key)          # 保存値を返す。無ければ nil
 - `nil` を save するとそのキーは削除される。
 - 用途: ウィンドウ位置スナップショット、現在のモード、トグル状態の記憶など。
 
+### 2.7 生キーフック `WM.on_any_key`（モード/リーダーキーの土台）
+
+**全キーイベントを Ruby に渡す**最下層のフック。`on_key` の照合より先に評価され、
+truthy を返すとそのイベントを consume して通常照合をスキップする。これ 1 個あれば、
+リーダーキー（F1 → t で tiling…）やモード、which-key などを **すべて Ruby で**書ける。
+
+```ruby
+WM.on_any_key do |ev|
+  # ev = { keycode:, mods:, flags:, key_down: }
+  next false unless ev[:key_down]   # 通常は keyDown だけ見る
+  # ... 好きなロジック ...
+  false                              # true を返したキーだけ consume
+end
+```
+- **keyDown / keyUp / 修飾キー変化すべてで呼ばれる**（`ev[:key_down]` で判別）。
+  hold 系もやれるが、keyUp を consume するとキーが押しっぱなし扱いになりうるので注意。
+- 複数登録可。登録順に評価し、最初に truthy を返したものが consume する。
+- `WM.reset!`（Reload 時）でクリア。**モード状態は自前の変数で持つ**（下の §5 レシピ参照）。
+
 ---
 
 ## 3. 修飾キー（mods）
@@ -279,6 +305,52 @@ end
 > **再起動後の復元の流れ**: ログイン項目で WindowManager を起動 → 対象アプリのウィンドウが
 > 揃ってから **⌘⌥R を1回**。`CGWindowID` は再起動で変わるので **id では復元できない**点に注意
 > （app + title で照合する）。
+
+### リーダーキー / モード（F1 → t で tiling …）
+
+修飾キーを消費せず、**1 つのキーでモードに入り、続く 1 キーで操作**する方式。`on_any_key`
+（§2.7）に状態変数を組み合わせるだけ。挙動（実行後に抜ける/留まる、サブモード、which-key、
+未割り当てキーの扱い）は **全部この Ruby を書き換えて**自由に決められる。
+
+```ruby
+mode = nil   # ローカル変数で状態を持つ（クロージャに捕捉される）
+
+WM.on_any_key do |ev|
+  next false unless ev[:key_down]
+  kc = ev[:keycode]
+
+  if mode == :leader
+    case kc
+    when 0x11  # t = 左半分
+      id = WM.focused_window; WM.tile(id, 0.0, 0.0, 0.5, 1.0) if id
+      mode = nil                       # ← 実行後に抜ける。留めたいならこの行を消すだけ
+    when 0x10  # y = 右半分
+      id = WM.focused_window; WM.tile(id, 0.5, 0.0, 0.5, 1.0) if id
+      mode = nil
+    when 0x03  # f = 最大化
+      id = WM.focused_window; WM.tile(id, 0.0, 0.0, 1.0, 1.0) if id
+      mode = nil
+    when 0x35  # Esc = キャンセル
+      mode = nil
+    else
+      mode = nil                       # 未割り当てキーで抜ける（モード中は全キー consume）
+    end
+    next true                          # モード中はすべて consume（タイプミス漏れ防止）
+  end
+
+  # 通常時: F1（修飾なし）でモードに入る
+  if kc == 0x7A && ev[:mods] == 0
+    mode = :leader
+    puts "leader: t=← y=→ f=full  (Esc cancel)"   # which-key は puts でも HUD でも好みで
+    next true
+  end
+
+  false                                # それ以外は素通し（ショートカット占有ゼロ）
+end
+```
+- 「**F1,t で抜ける版**」「**留まって連打できる版**」は `mode = nil` の有無だけ。
+- **サブモード**は `mode = :leader_g` のような別状態にして `case` を増やすだけ。
+- 自動タイムアウトは無し（ランタイムにタイマーが無い）。抜けるのは「キー実行」「Esc」「未割り当てキー」。
 
 ---
 

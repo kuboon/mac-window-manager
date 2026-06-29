@@ -1,0 +1,15 @@
+title: Ruby Window Manager
+description: Ruby (ruby.wasm) でホットリロードしながら挙動を書ける Swift 製 macOS ウィンドウマネージャ
+# GitHub Pages 標準（classic / ブランチ配信）でそのままビルドできる組み込みテーマ。
+# もっと作り込んだ docs サイト（サイドバーナビ・検索）にしたくなったら just-the-docs +
+# GitHub Actions ビルドへ移行する（README/Issue 参照）。
+theme: jekyll-theme-cayman
+
+# front matter を持つ全ページに cayman の default レイアウトを適用する。
+defaults:
+  - scope: { path: "" }
+    values: { layout: default }
+
+# 開発用ドキュメント（引き継ぎ）はサイトに出さない
+exclude:
+  - HANDOFF.md

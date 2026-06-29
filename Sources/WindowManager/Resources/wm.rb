@@ -117,10 +117,24 @@ module WM
       @screen_handlers ||= []
     end
 
+    # --- 生キーフック（モード/リーダーキー等を Ruby 側で自由に組むための最小の口）-----
+    # 全キーイベントを受け取る。keyDown だけでなく keyUp / 修飾キー変化でも呼ばれる
+    # （`ev[:key_down]` で判別）。`on_key` の照合より **先に** 評価され、truthy を返すと
+    # そのイベントを consume して通常の `on_key` 照合をスキップする。
+    # ev = { keycode:, mods:, flags:, key_down: }。
+    def on_any_key(&block)
+      any_handlers << block
+    end
+
+    def any_handlers
+      @any_handlers ||= []
+    end
+
     # 設定リロード時にハンドラを初期化するために呼ぶ。
     def reset!
       @handlers = []
       @screen_handlers = []
+      @any_handlers = []
     end
 
     def normalize_mods(mods)
@@ -137,8 +151,13 @@ module WM
     # Swift(EventTap) から各キーイベントごとに呼ばれるディスパッチャ。
     # 戻り値 true で consume（イベントを他アプリへ渡さない）。
     def _dispatch_key(keycode, flags, key_down)
-      return false unless key_down # 初期実装は keyDown のみ対象
       active_mods = flags & RELEVANT_MODS
+      # 生キーフックを最優先で評価（モード/リーダーキー等はここで全キーを掴める）。
+      unless any_handlers.empty?
+        ev = { keycode: keycode, mods: active_mods, flags: flags, key_down: key_down }
+        any_handlers.each { |h| return true if h.call(ev) }
+      end
+      return false unless key_down # 以降の on_key 照合は keyDown のみ対象
       handlers.each do |h|
         next unless h[:keycode] == keycode && h[:mods] == active_mods
         ev = { keycode: keycode, flags: flags, mods: active_mods }
