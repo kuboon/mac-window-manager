@@ -14,7 +14,8 @@ nav_order: 4
 
 **この module を `~/.wmrc.rb` に貼れば、AeroSpace の tiling レイアウトが手に入る。**
 AeroSpace の `layout tiles horizontal / vertical` に当たる「均等な列 / 行」と、よく使う
-「メイン＋スタック」をまとめてある。キー1発で今の Space を敷き直す。
+「メイン＋スタック」をまとめてある。キー1発で今の Space を敷き直す。さらに
+**窓をドラッグして画面端で離すと半分/隅へ吸着（snap）**する（`WM.on_drag_end`）。
 
 ```ruby
 module Tiling
@@ -41,6 +42,25 @@ module Tiling
       end
     end
 
+    # ドラッグ&ドロップした窓を、カーソルが居る画面端/隅へ吸着（Rectangle 風の snap）。
+    # ev = { window:, x:, y: }（x,y は top-left グローバルなドロップ位置）。
+    # 端に寄っていないドロップは何もしない（＝通常のドラッグ移動を邪魔しない）。
+    def snap_on_drop(ev)
+      screen = screen_at(ev[:x], ev[:y]) or return
+      fx = ((ev[:x] - screen["visible_x"]) / screen["visible_w"]).clamp(0.0, 1.0)
+      fy = ((ev[:y] - screen["visible_y"]) / screen["visible_h"]).clamp(0.0, 1.0)
+
+      edge = 0.15   # この割合ぶん端に入ったら「その端」とみなす
+      left   = fx < edge;      right  = fx > 1 - edge
+      top    = fy < edge;      bottom = fy > 1 - edge
+      return unless left || right || top || bottom   # 中央付近ならそのまま
+
+      # 左右→左右半分、上下→上下半分、隅（左右かつ上下）→1/4。
+      fx0, fw = left ? [0.0, 0.5] : right  ? [0.5, 0.5] : [0.0, 1.0]
+      fy0, fh = top  ? [0.0, 0.5] : bottom ? [0.5, 0.5] : [0.0, 1.0]
+      place({ "id" => ev[:window] }, screen, fx0, fy0, fw, fh)
+    end
+
     private
 
     # 可視領域を cols×rows のグリッドに割って詰める。
@@ -60,6 +80,14 @@ module Tiling
       hh = screen["visible_h"] * fh - 2 * GAP
       WM.move(w["id"], x, y); WM.resize(w["id"], ww, hh)
     end
+
+    # カーソル (x,y) を含むスクリーンを返す（マルチモニタ対応。無ければ先頭）。
+    def screen_at(x, y)
+      WM.screens.find { |s|
+        x >= s["visible_x"] && x < s["visible_x"] + s["visible_w"] &&
+        y >= s["visible_y"] && y < s["visible_y"] + s["visible_h"]
+      } || WM.screens.first
+    end
   end
 end
 
@@ -68,11 +96,16 @@ WM.on_key(0x04, [:cmd, :alt]) { Tiling.columns }     # H
 WM.on_key(0x09, [:cmd, :alt]) { Tiling.rows }        # V
 WM.on_key(0x24, [:cmd, :alt]) { Tiling.main_stack }  # Return
 
+# 窓をドラッグして画面端/隅で離すと、その半分/1/4 へ吸着（snap）。
+WM.on_drag_end { |ev| Tiling.snap_on_drop(ev) }
+
 # Space 切替のたびに自動で敷き直したい場合:
 WM.on_space_changed { Tiling.columns }
 ```
 
 `WM.windows` の順序を差し替えれば並び順、`ratio` を変えればメインの幅が変わる。
+`snap_on_drop` の `edge`（端とみなす幅）や吸着先の割合を変えれば、吸着の当たり判定・
+レイアウトを好みに調整できる。
 `mode`（モード）は `WM.on_any_key`（リーダーキー）にそのまま対応する（後述）。
 ワークスペースは AeroSpace と同じ「画面外退避」手法を Ruby で再現できる（private API 不要。後述）。
 
