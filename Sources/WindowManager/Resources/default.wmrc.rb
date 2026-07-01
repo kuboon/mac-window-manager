@@ -1,3 +1,5 @@
+# https://kuboon.github.io/mac-window-manager/
+#
 # default.wmrc.rb — 同梱のサンプル設定。
 #
 # 初回起動時にホームディレクトリへ ~/.wmrc.rb としてコピーされ、以後はそれを編集して

@@ -10,18 +10,74 @@ nav_order: 4
 [AeroSpace](https://github.com/nikitabobko/AeroSpace) の
 **標準的な設定が、このシステムでどう書けるか**の対応集。
 
-## 前提: 思想の違い
+## コピペで tiling レイアウト（AeroSpace の `layout tiles` 相当）
 
-- AeroSpace は **自動タイリング＋仮想ワークスペース** を持つ「完成品の WM」。`~/.aerospace.toml`
-  は「その WM の挙動を選ぶ」もの。特徴的なのは、AeroSpace が **native な macOS Spaces を使わず**、
-  ウィンドウを画面外へ退避することで独自のワークスペースを実装している点（private API を避ける設計）。
-- 本システムは **Ruby の基盤**。ウィンドウ操作・キー入力・永続化の最小プリミティブだけを提供し、
-  レイアウトやモードの「振る舞い」は**あなたが Ruby で書く**。
-- したがって:
-  - **キーバインド＋ウィンドウ操作（focus / move / resize / fullscreen / tile）は素直に移植できる**。
-  - **`mode`（モード）は `WM.on_any_key`（リーダーキー）にそのまま対応する**。
-  - **自動タイリングは付いてこない**が Ruby で組める。**ワークスペースは AeroSpace と同じ
-    「画面外退避」手法を Ruby で再現できる**（private API 不要。後述）。
+**この module を `~/.wmrc.rb` に貼れば、AeroSpace の tiling レイアウトが手に入る。**
+AeroSpace の `layout tiles horizontal / vertical` に当たる「均等な列 / 行」と、よく使う
+「メイン＋スタック」をまとめてある。キー1発で今の Space を敷き直す。
+
+```ruby
+module Tiling
+  GAP = 8   # 窓どうし・画面端の隙間
+
+  class << self
+    # 均等な列（tiles horizontal）: 窓を左から右へ縦に割って並べる。
+    def columns(wins = WM.windows, screen: WM.screens.first)
+      grid(wins, screen, cols: wins.size, rows: 1)
+    end
+
+    # 均等な行（tiles vertical）: 窓を上から下へ横に割って並べる。
+    def rows(wins = WM.windows, screen: WM.screens.first)
+      grid(wins, screen, cols: 1, rows: wins.size)
+    end
+
+    # メイン＋スタック: 左に主役 1 枚、右に残りを縦積み。
+    def main_stack(wins = WM.windows, screen: WM.screens.first, ratio: 0.6)
+      return unless screen && !wins.empty?
+      main, *rest = wins
+      place(main, screen, 0.0, 0.0, rest.empty? ? 1.0 : ratio, 1.0)
+      rest.each_with_index do |w, i|
+        place(w, screen, ratio, i.to_f / rest.size, 1.0 - ratio, 1.0 / rest.size)
+      end
+    end
+
+    private
+
+    # 可視領域を cols×rows のグリッドに割って詰める。
+    def grid(wins, screen, cols:, rows:)
+      return unless screen && !wins.empty?
+      wins.each_with_index do |w, i|
+        place(w, screen, (i % cols).to_f / cols, (i / cols).to_f / rows,
+              1.0 / cols, 1.0 / rows)
+      end
+    end
+
+    # 可視領域に対する割合 (fx,fy,fw,fh) で 1 枚を配置（GAP 込み）。
+    def place(w, screen, fx, fy, fw, fh)
+      x = screen["visible_x"] + screen["visible_w"] * fx + GAP
+      y = screen["visible_y"] + screen["visible_h"] * fy + GAP
+      ww = screen["visible_w"] * fw - 2 * GAP
+      hh = screen["visible_h"] * fh - 2 * GAP
+      WM.move(w["id"], x, y); WM.resize(w["id"], ww, hh)
+    end
+  end
+end
+
+# ⌘⌥H で均等な列、⌘⌥V で均等な行、⌘⌥Return でメイン＋スタック
+WM.on_key(0x04, [:cmd, :alt]) { Tiling.columns }     # H
+WM.on_key(0x09, [:cmd, :alt]) { Tiling.rows }        # V
+WM.on_key(0x24, [:cmd, :alt]) { Tiling.main_stack }  # Return
+
+# Space 切替のたびに自動で敷き直したい場合:
+WM.on_space_changed { Tiling.columns }
+```
+
+`WM.windows` の順序を差し替えれば並び順、`ratio` を変えればメインの幅が変わる。
+`mode`（モード）は `WM.on_any_key`（リーダーキー）にそのまま対応する（後述）。
+ワークスペースは AeroSpace と同じ「画面外退避」手法を Ruby で再現できる（private API 不要。後述）。
+
+> 本システムは **Ruby の基盤**。ウィンドウ操作・キー入力・永続化の最小プリミティブだけを提供し、
+> レイアウトの「振る舞い」は上の module のように**あなたが Ruby で書く**。
 
 > キーコードは US 物理位置。一覧は [API リファレンス]({{ '/wmrc-guide' | relative_url }})。
 > 修飾キーは `:cmd :shift :alt :ctrl`（fn は不可）。
@@ -188,28 +244,13 @@ end
 
 ## まだ 1:1 にならないもの（正直な現状）
 
-- **自動タイリング（ツリー管理）**: 本システムは手動配置（`move`/`resize`/`tile`）。
-  「常に隙間なく自動整列」は付いてこない。ただし `WM.windows` を読んで**自前のレイアウトを Ruby で
-  組める**（下記）。
+- **自動タイリング（ツリー管理）**: 常駐してツリーを保持し続ける「完成品の自動タイル」は無い。
+  ただし冒頭の [Tiling module](#コピペで-tiling-レイアウトaerospace-の-layout-tiles-相当) を貼れば、
+  キー1発（や Space 切替フック）で AeroSpace と同じ tiles レイアウトに敷き直せる。
 - **native macOS Spaces**: 上記の「画面外退避」で体験は再現できるが、OS の Space そのものの切替・
   ウィンドウ移動は private API が必要なため未対応。
 - **float / managed の区別**: すべて「手動で管理」なので float の概念は無い。「動かしたくない窓は
   そのキーで触らない」だけ。
-
-### 自前タイリングの例（手動タイル）
-
-```ruby
-# 今ある通常ウィンドウを、メイン画面の可視領域に縦グリッドで均等配置
-def tile_all_columns
-  wins = WM.windows
-  n = wins.size
-  return if n.zero?
-  wins.each_with_index do |w, i|
-    WM.tile(w["id"], i.to_f / n, 0.0, 1.0 / n, 1.0)
-  end
-end
-WM.on_key(0x11, [:cmd, :alt]) { tile_all_columns; true }   # ⌘⌥T
-```
 
 ---
 

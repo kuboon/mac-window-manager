@@ -10,16 +10,61 @@ nav_order: 3
 [yabai](https://github.com/koekeishiya/yabai) + [skhd](https://github.com/koekeishiya/skhd) の
 **標準的な設定が、このシステムでどう書けるか**の対応集。
 
-## 前提: 思想の違い
+## コピペで BSP タイリング（yabai の `layout bsp` 相当）
 
-- yabai は **自動タイリング（BSP ツリー）** を持つ「完成品の WM」。設定ファイルは「その WM の挙動を選ぶ」もの。
-  さらに scripting addition を入れると Spaces 操作まで踏み込む（SIP の一部無効化が前提）。
-- 本システムは **Ruby の基盤**。ウィンドウ操作・キー入力・永続化の最小プリミティブだけを提供し、
-  レイアウトやモードの「振る舞い」は**あなたが Ruby で書く**。
-- したがって:
-  - **キーバインド＋ウィンドウ操作（focus / warp / resize / fullscreen / tile）は素直に移植できる**。
-  - **自動 BSP タイリングと Spaces は 1:1 にはならない**（後述）。前者は Ruby で自前のレイアウトを組める。
-    後者は private API（yabai と同じ世界）が必要なので現状プリミティブ未提供。
+**この module を `~/.wmrc.rb` に貼れば、yabai の自動 BSP タイリングが手に入る。**
+可視領域を再帰的に二分し、長い辺を割る（yabai の自動 split と同じ挙動）。`window_gap` も付く。
+
+```ruby
+module BSP
+  GAP = 8   # 窓どうし・画面端の隙間（yabai の window_gap 相当）
+
+  class << self
+    # 矩形(px)を再帰的に二分し、wins を隙間なく敷き詰める。
+    # 「長い辺」を割る = yabai の自動 split（横長なら左右、縦長なら上下）。
+    def layout(wins, x, y, w, h)
+      return if wins.empty?
+      if wins.size == 1
+        WM.move(wins[0]["id"], x + GAP, y + GAP)
+        WM.resize(wins[0]["id"], w - 2 * GAP, h - 2 * GAP)
+        return
+      end
+      first, *rest = wins
+      if w >= h                       # 横長 → 縦線で分割（左右）
+        half = w / 2.0
+        layout([first], x, y, half, h)
+        layout(rest, x + half, y, w - half, h)
+      else                            # 縦長 → 横線で分割（上下）
+        half = h / 2.0
+        layout([first], x, y, w, half)
+        layout(rest, x, y + half, w, h - half)
+      end
+    end
+
+    # 今の Space の通常ウィンドウを BSP で敷き詰める。
+    def retile(screen: WM.screens.first)
+      return unless screen
+      layout(WM.windows,
+             screen["visible_x"], screen["visible_y"],
+             screen["visible_w"], screen["visible_h"])
+    end
+  end
+end
+
+# ⌘⌥Return で今の Space を BSP 整列（yabai の自動整列を手動トリガで）
+WM.on_key(0x24, [:cmd, :alt]) { BSP.retile }
+
+# 窓の抜き差しで自動再整列したい場合（Space 切替のたびに敷き直す例）:
+WM.on_space_changed { BSP.retile }
+```
+
+`GAP` を変えれば `window_gap`、`layout` に渡す矩形を内側へ縮めれば padding になる。
+`WM.windows` の順序を差し替えれば「マスターを大きく」等の変種も Ruby で自由に組める。
+
+> 本システムは **Ruby の基盤**。ウィンドウ操作・キー入力・永続化の最小プリミティブだけを提供し、
+> レイアウトの「振る舞い」は上の module のように**あなたが Ruby で書く**。キーバインド＋ウィンドウ操作
+> （focus / warp / resize / fullscreen / tile）はそのまま移植でき、BSP も上でそのまま再現できる。
+> Spaces だけは private API が要るので現状 1:1 にはならない（後述）。
 
 > キーコードは US 物理位置。一覧は [API リファレンス]({{ '/wmrc-guide' | relative_url }})。
 > 修飾キーは `:cmd :shift :alt :ctrl`（fn は不可）。
@@ -105,26 +150,11 @@ def half(fx);   id = WM.focused_window; WM.tile(id, fx, 0, 0.5, 1) if id; end
   構想）。詳細は [API リファレンス]({{ '/wmrc-guide' | relative_url }})。
   Spaces を**使わず**ワークスペースを再現する手は [AeroSpace から]({{ '/from-aerospace' | relative_url }})
   の「仮想ワークスペース」を参照（`move` で画面外退避するだけ。private API 不要）。
-- **自動 BSP タイリング（ツリー管理）**: 本システムは手動配置（`move`/`resize`/`tile`）。
-  「常に隙間なく自動整列」は付いてこない。ただし `WM.windows` を読んで**自前のレイアウトを Ruby で
-  組める**（下記）。
+- **自動 BSP タイリング（ツリー管理）**: 常駐してツリーを保持し続ける「完成品の自動タイル」は無い。
+  ただし冒頭の [BSP module](#コピペで-bsp-タイリングyabai-の-layout-bsp-相当) を貼れば、キー1発（や
+  Space 切替フック）で yabai と同じ BSP レイアウトに敷き直せる。順序や分割ルールも Ruby で自由に変えられる。
 - **float / managed の区別**: すべて「手動で管理」なので float の概念は無い。「動かしたくない窓は
   そのキーで触らない」だけ。
-
-### 自前タイリングの例（手動 BSP もどき）
-
-```ruby
-# 今ある通常ウィンドウを、メイン画面の可視領域に縦グリッドで均等配置
-def tile_all_columns
-  wins = WM.windows
-  n = wins.size
-  return if n.zero?
-  wins.each_with_index do |w, i|
-    WM.tile(w["id"], i.to_f / n, 0.0, 1.0 / n, 1.0)
-  end
-end
-WM.on_key(0x11, [:cmd, :alt]) { tile_all_columns; true }   # ⌘⌥T
-```
 
 ---
 
