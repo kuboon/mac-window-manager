@@ -289,6 +289,19 @@ final class RubyVM {
         return lastEvalTruthy
     }
 
+    /// 任意の Ruby 式を評価し、結果を文字列（`inspect` 相当）で返す（CLI 制御用）。
+    /// 例外時は `RubyVMError` を投げる。複数行/複数文のコードにも耐えるよう括弧＋改行で包む。
+    func evalString(_ code: String) throws -> String {
+        let wrapped = "(\n\(code)\n).inspect"
+        let (handle, state) = try evaluateOnVM(wrapped)
+        if state != 0 {
+            let message = (try? errorMessage()) ?? "Ruby exception (state=\(state))"
+            clearError()
+            throw RubyVMError(message)
+        }
+        return (try? liftRubyString(handle)) ?? ""
+    }
+
     /// `rb-eval-string-protect` を呼び、(結果ハンドル, state) を返す。state 非0 は例外。
     private func evaluateOnVM(_ code: String) throws -> (handle: UInt32, state: UInt32) {
         guard let evalFn = exportFunction("rb-eval-string-protect") else {

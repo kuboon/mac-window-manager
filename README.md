@@ -106,6 +106,35 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）は 2 段構成:
 `~/.wmrc.rb` を編集 → メニューバーの **Reload config**。再ビルド不要。
 サンプル（`default.wmrc.rb`）には Cmd+Opt+←/→/↑ で左半分/右半分/最大化する例が入っている。
 
+## CLI から操作する（`eval` / `reload`）
+
+メニューを開かずに、**動作中のアプリへターミナルからコマンドを送れる**。アプリは起動中に
+ローカルの Unix domain socket（`/tmp/wmrc-$USER.sock`、所有者のみ `0600`）を開いており、
+同じバイナリをサブコマンド付きで実行するとクライアントとして振る舞う（メニューバーは起動しない）。
+
+```sh
+# ~/.wmrc.rb で定義した func / module メソッドをそのまま呼ぶ（結果は inspect で表示）
+WindowManager.app/Contents/MacOS/WindowManager eval 'BSP.retile'
+WindowManager.app/Contents/MacOS/WindowManager eval 'WM.windows.size'
+
+# ~/.wmrc.rb を再読み込み（メニューの Reload config と同じ）
+WindowManager.app/Contents/MacOS/WindowManager reload
+```
+
+`eval` は `--eval` / `-e` も可。毎回フルパスは面倒なのでエイリアスや symlink を推奨:
+
+```sh
+alias wmrc="$HOME/Applications/WindowManager.app/Contents/MacOS/WindowManager"
+wmrc eval 'BSP.retile'   # => nil
+wmrc reload              # => reloaded ~/.wmrc.rb
+```
+
+- eval は**アプリ内の唯一の RubyVM 上**で走るので、`~/.wmrc.rb` の定義や状態（module の
+  インスタンス変数、`WM.load`/`WM.save` の値など）にそのままアクセスできる。
+- 実行はキーハンドラと同じ VM・同じメインスレッドで直列化される。Raycast / Alfred / シェル
+  スクリプト / cron などから任意のレイアウトを呼び出せる。
+- アプリが起動していないと接続に失敗し、終了コード 1 で `error: ...` を返す。
+
 ## 実装ステータス（正直な現状）
 
 この環境（Linux）では macOS バイナリをビルド・実行できないため、**未検証**の箇所がある:
