@@ -180,17 +180,25 @@ final class AppController: NSObject, NSApplicationDelegate {
     // MARK: - Ruby
 
     private func startRuby() {
-        guard let wasmURL = resourceURL("ruby", "wasm") else {
-            presentError("ruby.wasm がバンドルに見つかりません（make fetch-ruby / README 参照）。")
-            return
-        }
         do {
-            let vm = try RubyVM(wasmPath: wasmURL.path)
-            self.rubyVM = vm
-            try loadConfig(into: vm)
+            try bootRuby()
         } catch {
             presentError("RubyVM の起動に失敗: \(error)")
         }
+    }
+
+    /// ruby.wasm を**新規インスタンス化**し、wm.rb + ~/.wmrc.rb を読み込む。
+    /// 既存 VM があれば作り直す（旧 VM はここで参照が外れ ARC で解放）。
+    /// ＝ゼロからのクリーンリロード。同一 VM への再 eval と違い、定数の再定義
+    ///   （`already initialized constant WM::RPC_PATH` 等）の warning も、
+    ///   前回ロードの残存状態（module 変数・モンキーパッチ）も持ち越さない。
+    private func bootRuby() throws {
+        guard let wasmURL = resourceURL("ruby", "wasm") else {
+            throw RubyVMError("ruby.wasm がバンドルに見つかりません（make fetch-ruby / README 参照）。")
+        }
+        let vm = try RubyVM(wasmPath: wasmURL.path)
+        self.rubyVM = vm
+        try loadConfig(into: vm)
     }
 
     private func loadConfig(into vm: RubyVM) throws {
@@ -217,12 +225,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// ハンドラを初期化してから wm.rb + ~/.wmrc.rb を再ロードする。
-    /// メニュー（Reload config）と CLI（`WindowManager reload`）の共通処理。
+    /// 設定リロード（メニューの Reload config と CLI `reload` の共通処理）。
+    /// RubyVM ごと作り直してゼロからロードする（`bootRuby` 参照）。
     private func performReload() throws {
-        guard let vm = rubyVM else { throw RubyVMError("Ruby VM 未初期化") }
-        try vm.eval("WM.reset!")
-        try loadConfig(into: vm)
+        try bootRuby()
     }
 
     @objc private func editConfig() {
