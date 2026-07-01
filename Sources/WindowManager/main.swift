@@ -11,6 +11,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var eventTap: EventTap?
     private var dragMonitor: Any?
     private var draggedWindowID: CGWindowID?
+    private var controlServer: ControlSocketServer?
 
     private var userConfigPath: String {
         (NSHomeDirectory() as NSString).appendingPathComponent(".wmrc.rb")
@@ -29,9 +30,52 @@ final class AppController: NSObject, NSApplicationDelegate {
 
         startRuby()
         startEventTap()
+        startControlSocket()
         observeScreenChanges()
         observeSpaceChanges()
         observeWindowDrags()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        controlServer?.stop()
+    }
+
+    // MARK: - CLI 制御ソケット
+
+    /// CLI（別プロセスの `WindowManager eval/reload …`）からの要求を受ける Unix ソケットを立てる。
+    /// 失敗しても本体機能には影響しないので警告のみ。
+    private func startControlSocket() {
+        let server = ControlSocketServer { [weak self] request in
+            self?.handleControlRequest(request) ?? "error: app not ready"
+        }
+        guard let server else {
+            NSLog("[wmrc] 制御ソケットを開けませんでした（CLI 連携は無効）: \(ControlChannel.socketPath)")
+            return
+        }
+        controlServer = server
+        server.start()
+    }
+
+    /// 制御リクエスト（accept スレッドから呼ばれる）をメインスレッドへ hop して処理する。
+    /// RubyVM もネイティブ API もメインスレッド前提なので、ここで直列化する
+    /// （キーディスパッチと同じメインスレッド上で走るため競合しない）。
+    private func handleControlRequest(_ request: String) -> String {
+        let (verb, arg) = ControlChannel.parse(request)
+        var result = ""
+        DispatchQueue.main.sync {
+            switch verb {
+            case "eval":
+                guard let vm = self.rubyVM else { result = "error: ruby not ready"; return }
+                do { result = try vm.evalString(arg) }
+                catch { result = "error: \(error)" }
+            case "reload":
+                do { try self.performReload(); result = "reloaded ~/.wmrc.rb" }
+                catch { result = "error: \(error)" }
+            default:
+                result = "error: unknown command '\(verb)'（eval / reload）"
+            }
+        }
+        return result
     }
 
     // MARK: - Space（仮想デスクトップ）切替
@@ -136,17 +180,25 @@ final class AppController: NSObject, NSApplicationDelegate {
     // MARK: - Ruby
 
     private func startRuby() {
-        guard let wasmURL = resourceURL("ruby", "wasm") else {
-            presentError("ruby.wasm がバンドルに見つかりません（make fetch-ruby / README 参照）。")
-            return
-        }
         do {
-            let vm = try RubyVM(wasmPath: wasmURL.path)
-            self.rubyVM = vm
-            try loadConfig(into: vm)
+            try bootRuby()
         } catch {
             presentError("RubyVM の起動に失敗: \(error)")
         }
+    }
+
+    /// ruby.wasm を**新規インスタンス化**し、wm.rb + ~/.wmrc.rb を読み込む。
+    /// 既存 VM があれば作り直す（旧 VM はここで参照が外れ ARC で解放）。
+    /// ＝ゼロからのクリーンリロード。同一 VM への再 eval と違い、定数の再定義
+    ///   （`already initialized constant WM::RPC_PATH` 等）の warning も、
+    ///   前回ロードの残存状態（module 変数・モンキーパッチ）も持ち越さない。
+    private func bootRuby() throws {
+        guard let wasmURL = resourceURL("ruby", "wasm") else {
+            throw RubyVMError("ruby.wasm がバンドルに見つかりません（make fetch-ruby / README 参照）。")
+        }
+        let vm = try RubyVM(wasmPath: wasmURL.path)
+        self.rubyVM = vm
+        try loadConfig(into: vm)
     }
 
     private func loadConfig(into vm: RubyVM) throws {
@@ -166,14 +218,17 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func reloadConfig() {
-        guard let vm = rubyVM else { return }
         do {
-            // ハンドラを初期化してから再ロード。
-            try vm.eval("WM.reset!")
-            try loadConfig(into: vm)
+            try performReload()
         } catch {
             presentError("リロードに失敗: \(error)")
         }
+    }
+
+    /// 設定リロード（メニューの Reload config と CLI `reload` の共通処理）。
+    /// RubyVM ごと作り直してゼロからロードする（`bootRuby` 参照）。
+    private func performReload() throws {
+        try bootRuby()
     }
 
     @objc private func editConfig() {
@@ -202,6 +257,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.runModal()
     }
+}
+
+// ── CLI モード ──────────────────────────────────────────────────────────
+// `eval` / `reload` 等のサブコマンド付きで起動されたら、動作中アプリの制御ソケットへ
+// 投げて結果を出力し即終了する（メニューバー本体は起動しない）。
+//   WindowManager eval '<ruby>'   … ~/.wmrc.rb で定義した func/module を呼ぶ（結果を表示）
+//   WindowManager reload          … ~/.wmrc.rb を再読み込み（メニューの Reload config と同じ）
+if let request = CLI.requestFromArguments(CommandLine.arguments) {
+    guard let response = ControlSocketClient.send(request) else {
+        FileHandle.standardError.write(Data(
+            "error: WindowManager へ接続できません（起動していますか？ socket=\(ControlChannel.socketPath)）\n".utf8))
+        exit(1)
+    }
+    FileHandle.standardOutput.write(Data(response.utf8))
+    exit(response.hasPrefix("error:") ? 1 : 0)
 }
 
 // エントリポイント。LSUIElement=true なのでメニューバーのみ（Dock なし）。

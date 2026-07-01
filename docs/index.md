@@ -46,5 +46,6 @@ end
 | キーのリマップ＋consume、モード/リーダーキー | ✅（Ruby で） |
 | ドラッグで snap（端へ吸着）— `WM.on_drag_end` | ✅（Ruby で） |
 | ディスプレイ抜き差しイベント、Space 切替イベント、再起動をまたぐ永続保存 | ✅ |
+| CLI から定義済み func/module を呼ぶ・設定リロード（`WindowManager eval … / reload`） | ✅ |
 | 自動 BSP タイリング（ツリー管理） | ⏳ 未提供（`WM.windows` を読んで Ruby で自前レイアウトは組める） |
 | native Spaces の操作（切替先 Space の特定 / 別 Space の窓列挙 / 窓を別 Space へ移動） | ⏳ 未提供（private SkyLight が必要。ワークスペース体験は AeroSpace 風の画面外退避で Ruby 再現可） |
