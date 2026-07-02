@@ -1,15 +1,15 @@
 ---
 title: API リファレンス
-nav_order: 2
+nav_order: 4
 ---
-
-[← ホーム]({{ '/' | relative_url }}) ・ [yabai から]({{ '/from-yabai' | relative_url }}) ・ [AeroSpace から]({{ '/from-aerospace' | relative_url }})
 
 # `~/.wmrc.rb` スクリプティングガイド（Ruby API リファレンス）
 
 このファイルは **coding agent / 人間が `~/.wmrc.rb` を書くための完全な資料**。これと
 `Sources/WindowManager/Resources/wm.rb`（実装の正本）だけ読めば設定を書ける。
-OS API の背景は `docs/macos-window-api.md`、ランタイムの仕組みは `docs/ruby-wasm-spike.md`。
+OS API の背景は [macOS Window API]({{ '/macos-window-api' | relative_url }})、
+ランタイムの仕組みは [ruby.wasm スパイク]({{ '/ruby-wasm-spike' | relative_url }})。
+**書く前にコピペで済ませたい人は [レシピ集]({{ '/recipes/' | relative_url }}) へ。**
 
 ---
 
@@ -268,7 +268,11 @@ end
 
 ---
 
-## 5. レシピ集
+## 5. レシピ（抜粋）
+
+> module 化された「貼るだけ」のレシピ（BSP・仮想ワークスペース・ドラッグ吸着・
+> サイズサイクルなど）は **[レシピ集]({{ '/recipes/' | relative_url }})** にまとめてある。
+> ここでは API の使い方を示す小さな例だけを載せる。
 
 ```ruby
 # --- 半分タイル（⌘⌥ + 矢印）-----------------------------------------------

@@ -1,3 +1,9 @@
+---
+title: macOS Window API
+parent: 内部資料
+nav_order: 1
+---
+
 # macOS ウィンドウマネージ API インベントリ
 
 このドキュメントは、本アプリ（Ruby でスクリプタブルな macOS ウィンドウマネージャ）が

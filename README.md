@@ -106,6 +106,10 @@ CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）は 2 段構成:
 `~/.wmrc.rb` を編集 → メニューバーの **Reload config**。再ビルド不要。
 サンプル（`default.wmrc.rb`）には Cmd+Opt+←/→/↑ で左半分/右半分/最大化する例が入っている。
 
+**コピペで使える設定モジュール集**（BSP タイリング・仮想ワークスペース・ドラッグ吸着・
+リーダーキー…）と API リファレンスはドキュメントサイトへ:
+**<https://kuboon.github.io/mac-window-manager/>**
+
 ## CLI から操作する（`eval` / `reload`）
 
 メニューを開かずに、**動作中のアプリへターミナルからコマンドを送れる**。アプリは起動中に
