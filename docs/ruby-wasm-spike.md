@@ -1,3 +1,9 @@
+---
+title: ruby.wasm スパイク
+parent: 内部資料
+nav_order: 2
+---
+
 # ruby.wasm × WasmKit 検証結果（de-risk スパイク, 2026-06-26）
 
 HANDOFF の最優先課題「**ruby.wasm が WasmKit 上で起動して `puts` できるか**」を

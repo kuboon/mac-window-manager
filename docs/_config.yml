@@ -1,14 +1,25 @@
 title: Ruby Window Manager
 description: Ruby (ruby.wasm) でホットリロードしながら挙動を書ける Swift 製 macOS ウィンドウマネージャ
-# GitHub Pages 標準（classic / ブランチ配信）でそのままビルドできる組み込みテーマ。
-# もっと作り込んだ docs サイト（サイドバーナビ・検索）にしたくなったら just-the-docs +
-# GitHub Actions ビルドへ移行する（README/Issue 参照）。
-theme: jekyll-theme-cayman
 
-# front matter を持つ全ページに cayman の default レイアウトを適用する。
+# サイドバーナビ・検索・ページ階層（parent/nav_order）付きのドキュメントテーマ。
+# GitHub Pages 標準（classic / ブランチ配信）の remote_theme でそのままビルドできる。
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+
+# remote_theme ではテーマ側 _config.yml がマージされないため、default レイアウトを明示する。
 defaults:
   - scope: { path: "" }
     values: { layout: default }
+
+# just-the-docs の機能設定
+search_enabled: true
+heading_anchors: true
+aux_links:
+  GitHub: https://github.com/kuboon/mac-window-manager
+nav_external_links:
+  - title: ダウンロード (Releases)
+    url: https://github.com/kuboon/mac-window-manager/releases
 
 # 開発用ドキュメント（引き継ぎ）はサイトに出さない
 exclude:
