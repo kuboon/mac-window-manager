@@ -30,6 +30,9 @@ enum RpcBridge {
         case "windows":
             return RpcProtocol.ok(try RpcProtocol.encode(WindowAPI.listWindows()))
 
+        case "all_windows":
+            return RpcProtocol.ok(try RpcProtocol.encode(WindowAPI.listAllWindows()))
+
         case "screens":
             return RpcProtocol.ok(try RpcProtocol.encode(ScreenAPI.listScreens()))
 

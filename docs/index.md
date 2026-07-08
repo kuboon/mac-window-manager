@@ -44,6 +44,7 @@ end
 |---|---|
 | ウィンドウの move / resize / raise / minimize、tile（割合配置） | ✅ |
 | アプリの前面化 / 非表示、一覧、画面一覧、フォーカス取得 | ✅ |
+| 最小化・非表示の窓も含む全列挙（`WM.all_windows` + `minimized` フラグ） | ✅ |
 | キーのリマップ＋consume、モード/リーダーキー | ✅（Ruby で） |
 | ドラッグで snap（端へ吸着）— `WM.on_drag_end` | ✅（Ruby で） |
 | ディスプレイ抜き差しイベント、Space 切替イベント、再起動をまたぐ永続保存 | ✅ |

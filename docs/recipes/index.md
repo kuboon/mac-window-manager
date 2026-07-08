@@ -23,6 +23,7 @@ has_children: true
 | [リーダーキー・モード]({{ '/recipes/leader' | relative_url }}) | F1 → 1 キーで操作するモーダル操作 | vim, AeroSpace の mode |
 | [アプリのホットキー]({{ '/recipes/apps' | relative_url }}) | 1 キーでアプリへフォーカス / 表示・非表示トグル | ドロップダウンターミナル |
 | [CLI 連携]({{ '/recipes/cli' | relative_url }}) | ターミナル / Raycast / スクリプトから module を呼ぶ | yabai -m |
+| [最小化ウィンドウ]({{ '/recipes/minimized' | relative_url }}) | しまう / 全部戻す / 1 枚ずつ戻す（`WM.all_windows`） | Dock 巡回の置き換え |
 
 ## 使い方の基本
 

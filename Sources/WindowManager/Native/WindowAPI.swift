@@ -23,9 +23,10 @@ struct WindowInfo: Codable {
     let h: Double
     let layer: Int
     let onScreen: Bool
+    let minimized: Bool
 
     enum CodingKeys: String, CodingKey {
-        case id, pid, app, title, x, y, w, h, layer
+        case id, pid, app, title, x, y, w, h, layer, minimized
         case onScreen = "on_screen"
     }
 }
@@ -37,35 +38,79 @@ enum WindowAPI {
     // MARK: - 列挙（CoreGraphics Window Services）
 
     /// オンスクリーンの通常ウィンドウ一覧を返す。タイトルは画面収録権限が無いと空になる。
+    /// 最小化中・非表示アプリの窓は含まない（それらは `listAllWindows` で列挙する）。
     static func listWindows() -> [WindowInfo] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
-        return raw.compactMap { dict in
-            guard let id = dict[kCGWindowNumber as String] as? CGWindowID,
-                  let pid = dict[kCGWindowOwnerPID as String] as? pid_t,
-                  let boundsDict = dict[kCGWindowBounds as String] as? [String: Any]
-            else { return nil }
+        return raw.compactMap { info(from: $0, minimizedIDs: []) }
+    }
 
-            var bounds = CGRect.zero
-            _ = CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &bounds)
-
-            let layer = dict[kCGWindowLayer as String] as? Int ?? 0
-            // レイヤ 0 = 通常アプリのウィンドウ。メニューバー/Dock 等を除外。
-            guard layer == 0 else { return nil }
-
-            return WindowInfo(
-                id: id,
-                pid: pid,
-                app: dict[kCGWindowOwnerName as String] as? String ?? "",
-                title: dict[kCGWindowName as String] as? String ?? "",
-                x: bounds.origin.x, y: bounds.origin.y,
-                w: bounds.size.width, h: bounds.size.height,
-                layer: layer,
-                onScreen: (dict[kCGWindowIsOnscreen as String] as? Bool) ?? false
-            )
+    /// **最小化中・非表示アプリ・別 Space の窓も含む**全列挙（レイヤ 0 のみ）。
+    /// 各アプリの AX ウィンドウを走査して最小化状態（`minimized`）を照合するため、
+    /// `listWindows` より重い。呼び分け:
+    ///   - `on_screen == true` … 今見えている窓（listWindows と同じ集合）
+    ///   - `minimized == true` … Dock にしまわれている窓
+    ///   - どちらも false      … 非表示アプリ（hide）か別 Space の窓（public API では区別不可）
+    static func listAllWindows() -> [WindowInfo] {
+        let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
+        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return []
         }
+        let pids = Set(raw.compactMap { $0[kCGWindowOwnerPID as String] as? pid_t })
+        let minimizedIDs = minimizedWindowIDs(for: pids)
+        return raw.compactMap { info(from: $0, minimizedIDs: minimizedIDs) }
+    }
+
+    /// CGWindowList の 1 エントリを WindowInfo へ変換する（レイヤ 0 以外は nil）。
+    private static func info(from dict: [String: Any],
+                             minimizedIDs: Set<CGWindowID>) -> WindowInfo? {
+        guard let id = dict[kCGWindowNumber as String] as? CGWindowID,
+              let pid = dict[kCGWindowOwnerPID as String] as? pid_t,
+              let boundsDict = dict[kCGWindowBounds as String] as? [String: Any]
+        else { return nil }
+
+        var bounds = CGRect.zero
+        _ = CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &bounds)
+
+        let layer = dict[kCGWindowLayer as String] as? Int ?? 0
+        // レイヤ 0 = 通常アプリのウィンドウ。メニューバー/Dock 等を除外。
+        guard layer == 0 else { return nil }
+
+        return WindowInfo(
+            id: id,
+            pid: pid,
+            app: dict[kCGWindowOwnerName as String] as? String ?? "",
+            title: dict[kCGWindowName as String] as? String ?? "",
+            x: bounds.origin.x, y: bounds.origin.y,
+            w: bounds.size.width, h: bounds.size.height,
+            layer: layer,
+            onScreen: (dict[kCGWindowIsOnscreen as String] as? Bool) ?? false,
+            minimized: minimizedIDs.contains(id)
+        )
+    }
+
+    /// 指定 pid 群の AX ウィンドウを走査し、最小化中の CGWindowID 集合を返す。
+    /// （AX のウィンドウリストは最小化中の窓も含むのでここで拾える。）
+    private static func minimizedWindowIDs(for pids: Set<pid_t>) -> Set<CGWindowID> {
+        var ids = Set<CGWindowID>()
+        for pid in pids {
+            let app = AXUIElementCreateApplication(pid)
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let windows = windowsRef as? [AXUIElement] else { continue }
+            for win in windows {
+                var minRef: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minRef) == .success,
+                      (minRef as? Bool) == true else { continue }
+                var id: CGWindowID = 0
+                if _AXUIElementGetWindow(win, &id) == .success {
+                    ids.insert(id)
+                }
+            }
+        }
+        return ids
     }
 
     // MARK: - 操作（Accessibility）

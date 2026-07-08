@@ -39,10 +39,20 @@ module WM
 
     # --- 公開 API（docs/macos-window-api.md の対応表に準拠）------------------
 
-    # オンスクリーンの通常ウィンドウ一覧。
-    # => [{ "id"=>, "pid"=>, "app"=>, "title"=>, "x"=>, "y"=>, "w"=>, "h"=>, "on_screen"=> }, ...]
+    # オンスクリーンの通常ウィンドウ一覧。最小化中・非表示アプリの窓は含まない。
+    # => [{ "id"=>, "pid"=>, "app"=>, "title"=>, "x"=>, "y"=>, "w"=>, "h"=>,
+    #       "on_screen"=>, "minimized"=> }, ...]
     def windows
       call("windows")
+    end
+
+    # 最小化中・非表示アプリ・別 Space の窓も含む全列挙（windows と同じ shape）。
+    # 各アプリの AX 状態を照合するため windows より重い。呼び分け:
+    #   on_screen: true  … 今見えている窓（WM.windows と同じ集合）
+    #   minimized: true  … Dock にしまわれている窓（WM.minimize(id, false) で復元可）
+    #   どちらも false   … 非表示アプリ（hide）か別 Space の窓（public API では区別不可）
+    def all_windows
+      call("all_windows")
     end
 
     # ディスプレイ一覧（top-left 原点に統一済み）。
