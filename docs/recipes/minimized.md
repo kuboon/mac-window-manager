@@ -58,14 +58,13 @@ WM.on_key(0x2E, [:cmd, :alt, :ctrl])   { Minimized.restore_one }  # ⌘⌥⌃M
 
 ## 応用例
 
-特定アプリの最小化窓だけ戻す:
+特定アプリの最小化窓だけ戻す（アプリが分かっているなら、全列挙より
+プリミティブ `WM.minimized_ids(pid)` を直接使う方が軽い）:
 
 ```ruby
 def restore_app(bundle_id)
   app = WM.apps.find { |a| a["bundle_id"] == bundle_id } or return
-  WM.all_windows.each do |w|
-    WM.minimize(w["id"], false) if w["minimized"] && w["pid"] == app["pid"]
-  end
+  WM.minimized_ids(app["pid"]).each { |id| WM.minimize(id, false) }
 end
 ```
 

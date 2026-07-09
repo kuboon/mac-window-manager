@@ -56,7 +56,8 @@ end
 | メソッド | 返り値 |
 |---|---|
 | `WM.windows` | ウィンドウの配列（下記 shape）。**オンスクリーン**の通常ウィンドウのみ（レイヤ0）。**最小化中・非表示アプリの窓は含まない**。 |
-| `WM.all_windows` | **最小化中・非表示アプリ・別 Space の窓も含む**全列挙（同じ shape）。AX 照合が入るぶん `windows` より重い。 |
+| `WM.all_windows` | **最小化中・非表示アプリ・別 Space の窓も含む**全列挙。shape に `"minimized"` キーが加わる。アプリごとに AX 照合が走るぶん `windows` より重い。 |
+| `WM.minimized_ids(pid)` | 指定アプリの**最小化中**ウィンドウ id の配列（薄いプリミティブ）。 |
 | `WM.screens` | ディスプレイの配列（下記 shape）。 |
 | `WM.apps` | 起動中アプリの配列（通常 UI アプリのみ）。 |
 | `WM.focused_window` | フォーカス中ウィンドウの **id（Integer）**。無ければ `nil`。 |
@@ -73,7 +74,7 @@ end
   "w" => 1440.0, "h" => 875.0, # 幅・高さ
   "layer"     => 0,            # ウィンドウレイヤ（通常アプリは 0）
   "on_screen" => true,         # 今見えているか（WM.windows では常に true）
-  "minimized" => false,        # Dock にしまわれているか（WM.windows では常に false）
+  "minimized" => false,        # Dock にしまわれているか（WM.all_windows のみ。wm.rb が付与）
 }
 ```
 
@@ -85,6 +86,8 @@ end
   `minimized: true` = 最小化中（`WM.minimize(id, false)` で復元可）/
   どちらも `false` = 非表示アプリか別 Space の窓（public API では区別できない。
   アプリ単位の hidden は `WM.apps` の `"hidden"` で分かる）。
+- `WM.all_windows` は Swift のプリミティブ（生の全列挙 + `minimized_ids`）を
+  **wm.rb が束ねた便利関数**。独自の判定をしたければ `WM.minimized_ids(pid)` を直接使える。
 - なお `WM.move` で画面外へ退避した窓（仮想ワークスペース方式）は最小化とは違い
   オンスクリーン扱いのままなので、`WM.windows` に出続ける。
 
