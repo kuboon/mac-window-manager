@@ -39,10 +39,32 @@ module WM
 
     # --- 公開 API（docs/macos-window-api.md の対応表に準拠）------------------
 
-    # オンスクリーンの通常ウィンドウ一覧。
+    # オンスクリーンの通常ウィンドウ一覧。最小化中・非表示アプリの窓は含まない。
     # => [{ "id"=>, "pid"=>, "app"=>, "title"=>, "x"=>, "y"=>, "w"=>, "h"=>, "on_screen"=> }, ...]
     def windows
       call("windows")
+    end
+
+    # 指定アプリ（pid）の最小化中ウィンドウ id 一覧（薄いプリミティブ）。
+    # JSON 経由で Float になっても困らないよう Integer に正規化して返す。
+    def minimized_ids(pid)
+      call("minimized_ids", pid).map(&:to_i)
+    end
+
+    # 最小化中・非表示アプリ・別 Space の窓も含む全列挙。
+    # windows と同じ shape に "minimized" キーが加わる（この Ruby 側で付与する。
+    # Swift は「生の全列挙(windows_all)」と「pid ごとの minimized_ids」の 2 プリミティブだけ）。
+    # アプリごとに AX 照合の RPC が走るぶん windows より重い。呼び分け:
+    #   on_screen: true  … 今見えている窓（WM.windows と同じ集合）
+    #   minimized: true  … Dock にしまわれている窓（WM.minimize(id, false) で復元可）
+    #   どちらも false   … 非表示アプリ（hide）か別 Space の窓（public API では区別不可）
+    def all_windows
+      wins = call("windows_all")
+      minimized = {}
+      wins.map { |w| w["pid"] }.uniq.each do |pid|
+        minimized_ids(pid).each { |id| minimized[id] = true }
+      end
+      wins.each { |w| w["minimized"] = minimized.fetch(w["id"], false) }
     end
 
     # ディスプレイ一覧（top-left 原点に統一済み）。

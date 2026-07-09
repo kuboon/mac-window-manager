@@ -55,12 +55,14 @@ end
 
 | メソッド | 返り値 |
 |---|---|
-| `WM.windows` | ウィンドウの配列（下記 shape）。オンスクリーンの通常ウィンドウのみ（レイヤ0）。 |
+| `WM.windows` | ウィンドウの配列（下記 shape）。**オンスクリーン**の通常ウィンドウのみ（レイヤ0）。**最小化中・非表示アプリの窓は含まない**。 |
+| `WM.all_windows` | **最小化中・非表示アプリ・別 Space の窓も含む**全列挙。shape に `"minimized"` キーが加わる。アプリごとに AX 照合が走るぶん `windows` より重い。 |
+| `WM.minimized_ids(pid)` | 指定アプリの**最小化中**ウィンドウ id の配列（薄いプリミティブ）。 |
 | `WM.screens` | ディスプレイの配列（下記 shape）。 |
 | `WM.apps` | 起動中アプリの配列（通常 UI アプリのみ）。 |
 | `WM.focused_window` | フォーカス中ウィンドウの **id（Integer）**。無ければ `nil`。 |
 
-**window の shape**（`WM.windows` の各要素 / キーは文字列）:
+**window の shape**（`WM.windows` / `WM.all_windows` の各要素 / キーは文字列）:
 
 ```ruby
 {
@@ -71,9 +73,23 @@ end
   "x" => 0.0, "y" => 25.0,     # 左上座標（top-left, グローバル）
   "w" => 1440.0, "h" => 875.0, # 幅・高さ
   "layer"     => 0,            # ウィンドウレイヤ（通常アプリは 0）
-  "on_screen" => true,
+  "on_screen" => true,         # 今見えているか（WM.windows では常に true）
+  "minimized" => false,        # Dock にしまわれているか（WM.all_windows のみ。wm.rb が付与）
 }
 ```
+
+**最小化・非表示の窓の見え方**:
+
+- 最小化・`hide_app` した窓は **`WM.windows` から消える**（`on_screen: false` で現れる
+  のではなく、列挙されない）。見つけるには `WM.all_windows`。
+- `WM.all_windows` での状態判定: `on_screen: true` = 見えている /
+  `minimized: true` = 最小化中（`WM.minimize(id, false)` で復元可）/
+  どちらも `false` = 非表示アプリか別 Space の窓（public API では区別できない。
+  アプリ単位の hidden は `WM.apps` の `"hidden"` で分かる）。
+- `WM.all_windows` は Swift のプリミティブ（生の全列挙 + `minimized_ids`）を
+  **wm.rb が束ねた便利関数**。独自の判定をしたければ `WM.minimized_ids(pid)` を直接使える。
+- なお `WM.move` で画面外へ退避した窓（仮想ワークスペース方式）は最小化とは違い
+  オンスクリーン扱いのままなので、`WM.windows` に出続ける。
 
 **screen の shape**（`WM.screens` の各要素）:
 
@@ -104,7 +120,7 @@ end
 | `WM.move(window_id, x, y)` | ウィンドウ左上を (x, y)（top-left, グローバル）へ移動。 |
 | `WM.resize(window_id, w, h)` | ウィンドウサイズを (w, h) に設定。 |
 | `WM.raise_window(window_id)` | ウィンドウを前面へ。 |
-| `WM.minimize(window_id, flag = true)` | 最小化（`flag=false` で復元）。 |
+| `WM.minimize(window_id, flag = true)` | 最小化（`flag=false` で復元）。最小化した窓は `WM.windows` から消えるので、復元対象は `WM.all_windows` で探すか id を控えておく。 |
 | `WM.activate(pid)` | 指定 pid のアプリを前面化。 |
 | `WM.hide_app(pid)` | 指定 pid のアプリを隠す。 |
 
@@ -494,6 +510,8 @@ end
 8. 画面構成の変化に反応するなら `WM.on_screens_changed`（複数回呼ばれうるので**冪等**に）。
 9. 失敗は静かに false / nil になる設計。重要な前提は自分でチェックする
    （`WM.focused_window` の nil、`WM.load` の nil、照合に失敗した window など）。
+10. 最小化・非表示の窓は `WM.windows` に**出ない**。それらを扱うときだけ `WM.all_windows`
+    （`minimized` フラグ付き・やや重い）を使う。通常のレイアウト処理は `WM.windows` でよい。
 
 実装の正本は `Sources/WindowManager/Resources/wm.rb`、デフォルト設定例は
 `Sources/WindowManager/Resources/default.wmrc.rb`。

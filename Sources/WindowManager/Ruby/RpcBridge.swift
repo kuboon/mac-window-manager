@@ -30,6 +30,16 @@ enum RpcBridge {
         case "windows":
             return RpcProtocol.ok(try RpcProtocol.encode(WindowAPI.listWindows()))
 
+        // 最小化中・非表示アプリ・別 Space の窓も含む生の全列挙（minimized 判定なし）。
+        // minimized フラグの付与は wm.rb（WM.all_windows）が minimized_ids と束ねて行う。
+        case "windows_all":
+            return RpcProtocol.ok(try RpcProtocol.encode(WindowAPI.listWindows(all: true)))
+
+        // 指定 pid のアプリの最小化中ウィンドウ id 一覧。
+        case "minimized_ids":
+            let ids = WindowAPI.minimizedWindowIDs(pid: pid_t(RpcProtocol.int(args, 0)))
+            return RpcProtocol.ok(ids.map { Int($0) })
+
         case "screens":
             return RpcProtocol.ok(try RpcProtocol.encode(ScreenAPI.listScreens()))
 

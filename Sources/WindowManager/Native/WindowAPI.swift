@@ -36,36 +36,64 @@ enum WindowAPI {
 
     // MARK: - 列挙（CoreGraphics Window Services）
 
-    /// オンスクリーンの通常ウィンドウ一覧を返す。タイトルは画面収録権限が無いと空になる。
-    static func listWindows() -> [WindowInfo] {
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+    /// 通常ウィンドウ一覧を返す（レイヤ 0 のみ）。タイトルは画面収録権限が無いと空になる。
+    /// - `all: false`（既定）… オンスクリーンの窓のみ。最小化中・非表示アプリの窓は含まない。
+    /// - `all: true` … 最小化中・非表示アプリ・別 Space の窓も含む全列挙。
+    ///   最小化かどうかの判定は CG からは取れないので、Ruby 側（wm.rb の `WM.all_windows`）が
+    ///   `minimizedWindowIDs(pid:)` と突き合わせて行う（ポリシーは Ruby に置く方針）。
+    static func listWindows(all: Bool = false) -> [WindowInfo] {
+        var options: CGWindowListOption = [.excludeDesktopElements]
+        options.insert(all ? .optionAll : .optionOnScreenOnly)
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
-        return raw.compactMap { dict in
-            guard let id = dict[kCGWindowNumber as String] as? CGWindowID,
-                  let pid = dict[kCGWindowOwnerPID as String] as? pid_t,
-                  let boundsDict = dict[kCGWindowBounds as String] as? [String: Any]
-            else { return nil }
+        return raw.compactMap { info(from: $0) }
+    }
 
-            var bounds = CGRect.zero
-            _ = CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &bounds)
-
-            let layer = dict[kCGWindowLayer as String] as? Int ?? 0
-            // レイヤ 0 = 通常アプリのウィンドウ。メニューバー/Dock 等を除外。
-            guard layer == 0 else { return nil }
-
-            return WindowInfo(
-                id: id,
-                pid: pid,
-                app: dict[kCGWindowOwnerName as String] as? String ?? "",
-                title: dict[kCGWindowName as String] as? String ?? "",
-                x: bounds.origin.x, y: bounds.origin.y,
-                w: bounds.size.width, h: bounds.size.height,
-                layer: layer,
-                onScreen: (dict[kCGWindowIsOnscreen as String] as? Bool) ?? false
-            )
+    /// 指定アプリ（pid）の最小化中ウィンドウの CGWindowID 一覧を返す薄いプリミティブ。
+    /// AX のウィンドウリストは最小化中の窓も含むので、`kAXMinimizedAttribute` で拾える。
+    static func minimizedWindowIDs(pid: pid_t) -> [CGWindowID] {
+        let app = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return [] }
+        var ids: [CGWindowID] = []
+        for win in windows {
+            var minRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minRef) == .success,
+                  (minRef as? Bool) == true else { continue }
+            var id: CGWindowID = 0
+            if _AXUIElementGetWindow(win, &id) == .success {
+                ids.append(id)
+            }
         }
+        return ids
+    }
+
+    /// CGWindowList の 1 エントリを WindowInfo へ変換する（レイヤ 0 以外は nil）。
+    private static func info(from dict: [String: Any]) -> WindowInfo? {
+        guard let id = dict[kCGWindowNumber as String] as? CGWindowID,
+              let pid = dict[kCGWindowOwnerPID as String] as? pid_t,
+              let boundsDict = dict[kCGWindowBounds as String] as? [String: Any]
+        else { return nil }
+
+        var bounds = CGRect.zero
+        _ = CGRectMakeWithDictionaryRepresentation(boundsDict as CFDictionary, &bounds)
+
+        let layer = dict[kCGWindowLayer as String] as? Int ?? 0
+        // レイヤ 0 = 通常アプリのウィンドウ。メニューバー/Dock 等を除外。
+        guard layer == 0 else { return nil }
+
+        return WindowInfo(
+            id: id,
+            pid: pid,
+            app: dict[kCGWindowOwnerName as String] as? String ?? "",
+            title: dict[kCGWindowName as String] as? String ?? "",
+            x: bounds.origin.x, y: bounds.origin.y,
+            w: bounds.size.width, h: bounds.size.height,
+            layer: layer,
+            onScreen: (dict[kCGWindowIsOnscreen as String] as? Bool) ?? false
+        )
     }
 
     // MARK: - 操作（Accessibility）
