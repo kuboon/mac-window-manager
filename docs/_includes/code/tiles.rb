@@ -58,7 +58,7 @@ module Tiling
       y = screen["visible_y"] + screen["visible_h"] * fy + GAP
       ww = screen["visible_w"] * fw - 2 * GAP
       hh = screen["visible_h"] * fh - 2 * GAP
-      WM.move(w["id"], x, y); WM.resize(w["id"], ww, hh)
+      WM.set_frame(w["id"], x, y, ww, hh)
     end
 
     # カーソル (x,y) を含むスクリーンを返す（マルチモニタ対応。無ければ先頭）。

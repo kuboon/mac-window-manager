@@ -64,8 +64,21 @@ enum RpcBridge {
                                                    w: RpcProtocol.double(args, 1),
                                                    h: RpcProtocol.double(args, 2)))
 
-        case "raise":
-            return RpcProtocol.ok(WindowAPI.raise(windowID: windowID(args, 0)))
+        // 位置とサイズを 1 往復でまとめて当て、実際に落ち着いた矩形を返す。
+        // 解決できなかった場合（アプリ無応答・ウィンドウ消失）は nil。
+        case "set_frame":
+            let id = windowID(args, 0)
+            let frame = WindowAPI.setFrame(windowID: id,
+                                           x: RpcProtocol.double(args, 1),
+                                           y: RpcProtocol.double(args, 2),
+                                           w: RpcProtocol.double(args, 3),
+                                           h: RpcProtocol.double(args, 4))
+            guard let frame else { return RpcProtocol.ok(NSNull()) }
+            return RpcProtocol.ok(try RpcProtocol.encode(frame))
+
+        // アプリの前面化 + キーウィンドウ確定 + 重なり順までまとめて行う。
+        case "focus":
+            return RpcProtocol.ok(WindowAPI.focus(windowID: windowID(args, 0)))
 
         case "minimize":
             let id = windowID(args, 0)

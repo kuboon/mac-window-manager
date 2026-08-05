@@ -28,6 +28,7 @@ end
 | `WM` の全 API・キーコード表・落とし穴 | [API リファレンス]({{ '/wmrc-guide' | relative_url }}) |
 | yabai / AeroSpace の設定をどう移すか | [yabai から]({{ '/from-yabai' | relative_url }}) ・ [AeroSpace から]({{ '/from-aerospace' | relative_url }}) |
 | ターミナル / Raycast から操作したい | [CLI 連携]({{ '/recipes/cli' | relative_url }}) |
+| これから何が入るのか（他 WM から借りる技術の仕分け） | [OmniWM から借りるもの]({{ '/from-omniwm' | relative_url }}) |
 
 ## 設計思想
 

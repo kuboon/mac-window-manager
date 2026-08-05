@@ -7,8 +7,7 @@ module BSP
     def layout(wins, x, y, w, h)
       return if wins.empty?
       if wins.size == 1
-        WM.move(wins[0]["id"], x + GAP, y + GAP)
-        WM.resize(wins[0]["id"], w - 2 * GAP, h - 2 * GAP)
+        WM.set_frame(wins[0]["id"], x + GAP, y + GAP, w - 2 * GAP, h - 2 * GAP)
         return
       end
       first, *rest = wins

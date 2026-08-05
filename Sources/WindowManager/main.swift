@@ -34,6 +34,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         observeScreenChanges()
         observeSpaceChanges()
         observeWindowDrags()
+        observeAppTermination()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -104,6 +105,21 @@ final class AppController: NSObject, NSApplicationDelegate {
             object: nil, queue: .main
         ) { [weak self] _ in
             _ = try? self?.rubyVM?.eval("WM._on_screens_changed")
+        }
+    }
+
+    // MARK: - アプリ終了の後始末
+
+    /// アプリが終了したら、その pid 用の AX ワーカースレッドを畳む。
+    /// （畳まなくても新規スレッド作成時に掃除されるが、ここで即座に回収しておく。）
+    private func observeAppTermination() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            else { return }
+            AXThreadPool.drop(pid: app.processIdentifier)
         }
     }
 

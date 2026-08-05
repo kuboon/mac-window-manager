@@ -37,8 +37,7 @@ module Layouts
               wins.find { |w| !used.include?(w["id"]) && w["app"] == s["app"] }
         next unless win
         used << win["id"]
-        WM.move(win["id"], s["x"], s["y"])
-        WM.resize(win["id"], s["w"], s["h"])
+        WM.set_frame(win["id"], s["x"], s["y"], s["w"], s["h"])
       end
       puts "[layouts] restored #{used.size}/#{saved.size} (#{slot} @ #{signature})"
     end
