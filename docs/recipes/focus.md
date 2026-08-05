@@ -27,10 +27,8 @@ module Focus
     def swap(dir)
       cur = current or return
       nb = neighbor(dir) or return
-      WM.move(cur["id"], nb["x"], nb["y"])
-      WM.resize(cur["id"], nb["w"], nb["h"])
-      WM.move(nb["id"], cur["x"], cur["y"])
-      WM.resize(nb["id"], cur["w"], cur["h"])
+      WM.set_frame(cur["id"], nb["x"], nb["y"], nb["w"], nb["h"])
+      WM.set_frame(nb["id"], cur["x"], cur["y"], cur["w"], cur["h"])
     end
 
     # フォーカス窓を相対リサイズ

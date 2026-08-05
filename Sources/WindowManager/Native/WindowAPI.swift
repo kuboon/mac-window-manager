@@ -3,14 +3,6 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 
-/// CGWindowID から対応する AXUIElement を引くための private API。
-/// 公開 API には CGWindowID ↔ AXUIElement の対応付けが無いため、yabai 等の
-/// 主要ウィンドウマネージャと同様にこの private シンボルを利用する。
-/// （OS 更新で消える可能性は低いが、private である点は理解の上で使用すること）
-@_silgen_name("_AXUIElementGetWindow")
-private func _AXUIElementGetWindow(_ element: AXUIElement,
-                                   _ identifier: UnsafeMutablePointer<CGWindowID>) -> AXError
-
 /// Ruby に渡すウィンドウ情報（JSON 化される）。座標は top-left 原点。
 struct WindowInfo: Codable {
     let id: CGWindowID
@@ -30,8 +22,27 @@ struct WindowInfo: Codable {
     }
 }
 
-/// macOS のウィンドウ列挙・操作 API のラッパ（Part A の §1, §2 を実装）。
-/// 全メソッドはメインスレッドで呼ぶこと（AX/AppKit の制約）。
+/// `set_frame` の結果（実際に落ち着いた矩形）。要求どおりにならないことがあるので返す。
+struct FrameInfo: Codable {
+    let x: Double
+    let y: Double
+    let w: Double
+    let h: Double
+
+    init(_ rect: CGRect) {
+        x = rect.origin.x
+        y = rect.origin.y
+        w = rect.size.width
+        h = rect.size.height
+    }
+}
+
+/// macOS のウィンドウ列挙・操作 API のラッパ。
+///
+/// **スレッド方針**: 列挙（CGWindowList）は WindowServer との通信なのでメインスレッドで行う。
+/// 一方 **Accessibility の呼び出しは対象アプリの応答を待つ**ため、必ず `AXThreadPool` 経由で
+/// pid ごとの専用スレッドへ逃がし、タイムアウトを付ける。取得できなかった場合は `nil`/`false`
+/// を返し、ウィンドウマネージャ全体は止めない。
 enum WindowAPI {
 
     // MARK: - 列挙（CoreGraphics Window Services）
@@ -53,21 +64,14 @@ enum WindowAPI {
     /// 指定アプリ（pid）の最小化中ウィンドウの CGWindowID 一覧を返す薄いプリミティブ。
     /// AX のウィンドウリストは最小化中の窓も含むので、`kAXMinimizedAttribute` で拾える。
     static func minimizedWindowIDs(pid: pid_t) -> [CGWindowID] {
-        let app = AXUIElementCreateApplication(pid)
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else { return [] }
-        var ids: [CGWindowID] = []
-        for win in windows {
-            var minRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minRef) == .success,
-                  (minRef as? Bool) == true else { continue }
-            var id: CGWindowID = 0
-            if _AXUIElementGetWindow(win, &id) == .success {
-                ids.append(id)
+        AXThreadPool.run(pid: pid) {
+            appWindows(pid: pid).compactMap { win -> CGWindowID? in
+                var minRef: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(win, kAXMinimizedAttribute as CFString, &minRef) == .success,
+                      (minRef as? Bool) == true else { return nil }
+                return PrivateAPI.windowID(of: win)
             }
-        }
-        return ids
+        } ?? []
     }
 
     /// CGWindowList の 1 エントリを WindowInfo へ変換する（レイヤ 0 以外は nil）。
@@ -101,83 +105,257 @@ enum WindowAPI {
     /// 指定ウィンドウを (x, y)（top-left 原点, グローバル座標）へ移動する。
     @discardableResult
     static func move(windowID: CGWindowID, x: Double, y: Double) -> Bool {
-        guard let win = axWindow(for: windowID) else { return false }
-        var point = CGPoint(x: x, y: y)
-        guard let value = AXValueCreate(.cgPoint, &point) else { return false }
-        return AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, value) == .success
+        withWindow(windowID) { window, pid in
+            withEnhancedUIDisabled(pid: pid) {
+                setPosition(window, CGPoint(x: x, y: y))
+            }
+        } ?? false
     }
 
     /// 指定ウィンドウのサイズを (w, h) に設定する。
     @discardableResult
     static func resize(windowID: CGWindowID, w: Double, h: Double) -> Bool {
-        guard let win = axWindow(for: windowID) else { return false }
-        var size = CGSize(width: w, height: h)
-        guard let value = AXValueCreate(.cgSize, &size) else { return false }
-        return AXUIElementSetAttributeValue(win, kAXSizeAttribute as CFString, value) == .success
+        withWindow(windowID) { window, pid in
+            withEnhancedUIDisabled(pid: pid) {
+                setSize(window, CGSize(width: w, height: h))
+            }
+        } ?? false
     }
 
-    /// 指定ウィンドウを前面へ。
+    /// 位置とサイズを 1 回の AX 往復でまとめて当て、**実際に落ち着いた矩形**を返す。
+    ///
+    /// `move` + `resize` を別々に呼ぶより望ましい:
+    ///   - AX スレッドへの往復が 1 回で済む
+    ///   - `AXEnhancedUserInterface` の退避/復帰も 1 回で済む
+    ///   - 「移動 → リサイズ → 再度移動」の順で当てるので、リサイズ時にディスプレイ境界へ
+    ///     押し戻される定番の症状を吸収できる
+    static func setFrame(windowID: CGWindowID, x: Double, y: Double, w: Double, h: Double) -> FrameInfo? {
+        let target = CGRect(x: x, y: y, width: w, height: h)
+        let rect: CGRect? = withWindow(windowID) { window, pid in
+            withEnhancedUIDisabled(pid: pid) {
+                applyFrame(window, target)
+            }
+        }
+        return rect.map(FrameInfo.init)
+    }
+
+    /// 指定ウィンドウへフォーカスを移す（アプリの前面化 + キーウィンドウ確定 + 重なり順）。
     @discardableResult
-    static func raise(windowID: CGWindowID) -> Bool {
-        guard let win = axWindow(for: windowID) else { return false }
-        return AXUIElementPerformAction(win, kAXRaiseAction as CFString) == .success
+    static func focus(windowID: CGWindowID) -> Bool {
+        guard let pid = ownerPID(of: windowID) else { return false }
+
+        // 1. WindowServer 経由でアプリ前面化 + キーウィンドウ確定（対象アプリを待たない）。
+        var ok = PrivateAPI.focusWindow(pid: pid, windowID: windowID)
+        if !ok {
+            // private シンボルが失われた場合の保険。アプリ単位までしか指定できない。
+            ok = AppAPI.activate(pid: pid)
+        }
+
+        // 2. 同一アプリ内の重なり順を整える（こちらは AX なので専用スレッドへ）。
+        _ = withWindow(windowID) { window, _ in
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success
+        }
+        return ok
     }
 
     /// 指定ウィンドウの最小化状態を設定する。
     @discardableResult
     static func minimize(windowID: CGWindowID, _ minimized: Bool) -> Bool {
-        guard let win = axWindow(for: windowID) else { return false }
-        let value = minimized ? kCFBooleanTrue : kCFBooleanFalse
-        return AXUIElementSetAttributeValue(win, kAXMinimizedAttribute as CFString, value!) == .success
+        withWindow(windowID) { window, _ in
+            let value = (minimized ? kCFBooleanTrue : kCFBooleanFalse)!
+            return AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, value) == .success
+        } ?? false
     }
 
     /// 現在フォーカスされているウィンドウの CGWindowID を返す。
+    ///
+    /// システム全体の AX 要素への問い合わせは内部的に最前面アプリへ転送されるため、
+    /// 相手がハングしていればブロックしうる。専用スレッド + タイムアウトで囲う。
     static func focusedWindowID() -> CGWindowID? {
-        let system = AXUIElementCreateSystemWide()
-        var focusedApp: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute as CFString, &focusedApp) == .success,
-              let app = focusedApp else { return nil }
-        let appElement = app as! AXUIElement
-
-        var focusedWindow: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &focusedWindow) == .success,
-              let window = focusedWindow else { return nil }
-        let winElement = window as! AXUIElement
-
-        var id: CGWindowID = 0
-        guard _AXUIElementGetWindow(winElement, &id) == .success else { return nil }
-        return id
+        AXThreadPool.run(pid: AXThreadPool.systemWidePID) { () -> CGWindowID? in
+            let system = AXUIElementCreateSystemWide()
+            guard let app = element(system, kAXFocusedApplicationAttribute),
+                  let window = element(app, kAXFocusedWindowAttribute) else { return nil }
+            return PrivateAPI.windowID(of: window)
+        } ?? nil
     }
 
-    // MARK: - CGWindowID → AXUIElement 解決
+    // MARK: - AX プリミティブ（すべて AX スレッド上で呼ばれる前提）
 
-    /// CGWindowID に対応する AX ウィンドウ要素を引く。
-    /// pid をたどってアプリ要素を作り、その全ウィンドウを走査して _AXUIElementGetWindow で照合する。
-    private static func axWindow(for windowID: CGWindowID) -> AXUIElement? {
-        guard let pid = pid(for: windowID) else { return nil }
+    private static func setPosition(_ window: AXUIElement, _ point: CGPoint) -> Bool {
+        var point = point
+        guard let value = AXValueCreate(.cgPoint, &point) else { return false }
+        return AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value) == .success
+    }
+
+    private static func setSize(_ window: AXUIElement, _ size: CGSize) -> Bool {
+        var size = size
+        guard let value = AXValueCreate(.cgSize, &size) else { return false }
+        return AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value) == .success
+    }
+
+    private static func frame(of window: AXUIElement) -> CGRect? {
+        guard let positionValue = copyElement(window, kAXPositionAttribute),
+              let sizeValue = copyElement(window, kAXSizeAttribute),
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID()
+        else { return nil }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
+        return CGRect(origin: origin, size: size)
+    }
+
+    /// 目標矩形を当てて、実際に落ち着いた矩形を返す。
+    private static func applyFrame(_ window: AXUIElement, _ target: CGRect) -> CGRect {
+        // 先に移動して目標ディスプレイ上へ置いてから寸法を決める。逆順だと
+        // 「移動前のディスプレイの可視領域」でクランプされることがある。
+        _ = setPosition(window, target.origin)
+        _ = setSize(window, target.size)
+        // リサイズで押し戻された分を当て直す。
+        _ = setPosition(window, target.origin)
+
+        var achieved = frame(of: window) ?? target
+        // ずれていたら 1 回だけ再試行する。最小サイズ等の物理的な制約が理由なら
+        // 2 回目も同じ結果になるので、それ以上は粘らない（呼び出し側が実測値を見る）。
+        if !achieved.equalTo(target, tolerance: 1.0) {
+            _ = setSize(window, target.size)
+            _ = setPosition(window, target.origin)
+            achieved = frame(of: window) ?? achieved
+        }
+        return achieved
+    }
+
+    /// 書き込みの間だけ `AXEnhancedUserInterface` を落とす。
+    ///
+    /// このアプリ属性が立っていると、多くのアプリ（Electron / Chromium / JetBrains 系など）が
+    /// ウィンドウの位置・サイズ変更を**アニメーション付きで遅延適用**するようになり、
+    /// 直後に読み返した値が要求と食い違う・タイルが目に見えてガタつく、といった症状になる。
+    /// 元から立っていた場合のみ、書き込み後に必ず戻す（支援技術の動作を壊さないため）。
+    private static func withEnhancedUIDisabled<T>(pid: pid_t, _ body: () -> T) -> T {
         let app = AXUIElementCreateApplication(pid)
-
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else { return nil }
-
-        for win in windows {
-            var id: CGWindowID = 0
-            if _AXUIElementGetWindow(win, &id) == .success, id == windowID {
-                return win
+        let key = "AXEnhancedUserInterface"
+        let wasEnabled = (copyElement(app, key) as? Bool) == true
+        if wasEnabled {
+            AXUIElementSetAttributeValue(app, key as CFString, kCFBooleanFalse!)
+        }
+        defer {
+            if wasEnabled {
+                AXUIElementSetAttributeValue(app, key as CFString, kCFBooleanTrue!)
             }
         }
-        return nil
+        return body()
     }
 
-    /// CGWindowID から所有プロセスの pid を引く。
-    private static func pid(for windowID: CGWindowID) -> pid_t? {
+    private static func copyElement(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return value
+    }
+
+    /// 属性値を `AXUIElement` として取り出す（型が違えば nil）。
+    private static func element(_ owner: AXUIElement, _ attribute: String) -> AXUIElement? {
+        guard let value = copyElement(owner, attribute),
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    private static func appWindows(pid: pid_t) -> [AXUIElement] {
+        let app = AXUIElementCreateApplication(pid)
+        guard let raw = copyElement(app, kAXWindowsAttribute),
+              let windows = raw as? [AXUIElement] else { return [] }
+        return windows
+    }
+
+    // MARK: - CGWindowID → AXUIElement の解決とキャッシュ
+
+    private struct CachedWindow {
+        let pid: pid_t
+        let element: AXUIElement
+    }
+
+    private static let cacheLock = NSLock()
+    private static var cache: [CGWindowID: CachedWindow] = [:]
+    /// 際限なく増えないように上限を設ける（超えたら丸ごと捨てて引き直す）。
+    private static let cacheLimit = 512
+
+    /// `windowID` に対応する AX 要素を解決し、その pid の専用スレッド上で `body` を実行する。
+    ///
+    /// 解決（アプリのウィンドウ列挙 + `_AXUIElementGetWindow` 照合）も AX 呼び出しなので、
+    /// `body` と**同じ 1 回の往復の中**で行う。解決できない・タイムアウトした場合は nil。
+    private static func withWindow<T>(_ windowID: CGWindowID,
+                                      timeout: TimeInterval = AXThreadPool.defaultTimeout,
+                                      _ body: @escaping (AXUIElement, pid_t) -> T) -> T? {
+        if let cached = cachedWindow(windowID),
+           let value = attempt(windowID, pid: cached.pid, hint: cached.element, timeout: timeout, body) {
+            return value
+        }
+        // キャッシュが無い / 古い。CGWindowList で pid を引き直して再解決する。
+        dropCache(windowID)
+        guard let pid = ownerPID(of: windowID) else { return nil }
+        return attempt(windowID, pid: pid, hint: nil, timeout: timeout, body)
+    }
+
+    private static func attempt<T>(_ windowID: CGWindowID,
+                                   pid: pid_t,
+                                   hint: AXUIElement?,
+                                   timeout: TimeInterval,
+                                   _ body: @escaping (AXUIElement, pid_t) -> T) -> T? {
+        let outcome: (AXUIElement, T)? = AXThreadPool.run(pid: pid, timeout: timeout) { () -> (AXUIElement, T)? in
+            guard let window = locate(windowID: windowID, pid: pid, hint: hint) else { return nil }
+            return (window, body(window, pid))
+        } ?? nil
+        guard let outcome else { return nil }
+        store(windowID, CachedWindow(pid: pid, element: outcome.0))
+        return outcome.1
+    }
+
+    /// AX スレッド上でウィンドウ要素を特定する。ヒントが今も同じウィンドウを指していれば
+    /// 列挙を省ける（タイル敷き直しのような連続操作では毎回ここで当たる）。
+    private static func locate(windowID: CGWindowID, pid: pid_t, hint: AXUIElement?) -> AXUIElement? {
+        if let hint, PrivateAPI.windowID(of: hint) == windowID { return hint }
+        return appWindows(pid: pid).first { PrivateAPI.windowID(of: $0) == windowID }
+    }
+
+    /// CGWindowID から所有プロセスの pid を引く（キャッシュ優先）。
+    static func ownerPID(of windowID: CGWindowID) -> pid_t? {
+        if let cached = cachedWindow(windowID) { return cached.pid }
         let options: CGWindowListOption = [.optionIncludingWindow]
         guard let raw = CGWindowListCopyWindowInfo(options, windowID) as? [[String: Any]],
               let dict = raw.first,
               let pid = dict[kCGWindowOwnerPID as String] as? pid_t
         else { return nil }
         return pid
+    }
+
+    private static func cachedWindow(_ windowID: CGWindowID) -> CachedWindow? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return cache[windowID]
+    }
+
+    private static func store(_ windowID: CGWindowID, _ entry: CachedWindow) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if cache.count >= cacheLimit { cache.removeAll(keepingCapacity: true) }
+        cache[windowID] = entry
+    }
+
+    private static func dropCache(_ windowID: CGWindowID) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        cache.removeValue(forKey: windowID)
+    }
+}
+
+private extension CGRect {
+    /// 端数（HiDPI のピクセル丸め等）を無視した一致判定。
+    func equalTo(_ other: CGRect, tolerance: CGFloat) -> Bool {
+        abs(origin.x - other.origin.x) <= tolerance &&
+            abs(origin.y - other.origin.y) <= tolerance &&
+            abs(size.width - other.size.width) <= tolerance &&
+            abs(size.height - other.size.height) <= tolerance
     }
 }
 #endif

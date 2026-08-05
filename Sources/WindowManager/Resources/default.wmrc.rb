@@ -76,8 +76,7 @@ WM.on_key(KEY_R, [:cmd, :alt]) do
     win = current.find { |w| w["app"] == s["app"] && w["title"] == s["title"] } ||
           current.find { |w| w["app"] == s["app"] }
     next unless win
-    WM.move(win["id"], s["x"], s["y"])
-    WM.resize(win["id"], s["w"], s["h"])
+    WM.set_frame(win["id"], s["x"], s["y"], s["w"], s["h"])
     restored += 1
   end
   puts "[wmrc] restored #{restored}/#{saved.size} windows for [#{layout_signature}]"

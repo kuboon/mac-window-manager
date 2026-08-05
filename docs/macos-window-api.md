@@ -104,7 +104,7 @@ nav_order: 1
 ### ウィンドウアクション
 | アクション | 内容 | 公開 |
 |---|---|---|
-| `kAXRaiseAction` | ウィンドウを前面へ | ✅ `WM.raise` |
+| `kAXRaiseAction` | ウィンドウを前面へ（`WM.focus` の 2 段目） | ✅ `WM.focus` |
 | `kAXPressAction` | ボタン押下（閉じる/ズーム等） | 将来 |
 
 ### 変更通知（Observer）
@@ -119,6 +119,32 @@ nav_order: 1
 `kAXUIElementDestroyedNotification`, `kAXApplicationActivatedNotification`
 
 > AX 操作には **アクセシビリティ権限**が必須。`AXError` を必ずチェック（`.success` 以外は失敗）。
+
+### スレッド方針（重要）
+
+AX の各 API は**対象アプリのメインスレッドへの同期 IPC** で実装されている。相手がビジー・
+ハング・モーダル表示中だと、呼び出し側が数秒単位でブロックされる。このアプリは
+Ruby → fd 3 → `RpcBridge.dispatch` をメインスレッドで同期実行するので、AX をメインスレッドで
+直接叩くと**アプリ 1 つのハングでウィンドウマネージャ全体（キーハンドラを含む）が止まる**。
+
+そこで `AXThreadPool`（`Sources/WindowManager/Native/AXThreadPool.swift`）が pid ごとに
+RunLoop 付きの専用スレッドを持ち、AX 呼び出しはすべてそこへ投げてタイムアウト付きで待つ。
+
+- 既定 200ms。超えたら `nil` を返し、呼び出し元は「取得できなかった」として扱う。
+- 同一 pid の呼び出しはその pid のスレッド上で直列化される（AX の要求順が保たれる）。
+- 3 回連続でタイムアウトしたアプリは 25ms の打診に切り替え、応答が戻れば通常運用へ復帰する。
+
+`CGWindowListCopyWindowInfo` は WindowServer との通信でアプリを待たないため、メインスレッドで
+呼んでよい（列挙が AX より速いのはこのため）。
+
+### `AXEnhancedUserInterface`
+
+アプリ要素の非公式属性。VoiceOver 等の支援技術が有効なときに立つ。これが立っていると多くの
+アプリ（Electron / Chromium / JetBrains 系など）が位置・サイズ変更を**アニメーション付きで
+遅延適用**するようになり、直後に読み返した値が要求と食い違う・タイルがガタつく。
+
+`WM.set_frame` は書き込みの間だけこれを `false` にし、**元から立っていた場合のみ**書き込み後に
+戻す（支援技術の動作を壊さないため）。yabai をはじめ既存のウィンドウマネージャが同じ回避策を取る。
 
 ---
 
@@ -227,14 +253,54 @@ nav_order: 1
 
 ---
 
-## 7. Spaces / Mission Control（private CGS API — 非推奨）
+## 7. private API
 
-`CGSMainConnectionID`, `CGSGetActiveSpace`, `CGSCopyManagedDisplaySpaces`,
-`CGSMoveWindowsToManagedSpace`, `CGSAddWindowsToSpaces` など。
+いずれも Apple 非公開だが、yabai / AeroSpace など主要なウィンドウマネージャが長年利用しており、
+**SIP の無効化も特別な entitlement も不要**。宣言は
+`Sources/WindowManager/Native/PrivateAPI.swift` に集約している。
 
-> ⚠️ **private/非公式 API**。OS アップデートで予告なく壊れる・App Store 不可。
-> 自分用ビルドでのみ、リスク承知で将来オプション化。初期スコープ対象外。
-> 自アプリのウィンドウだけなら公式の `NSWindow.collectionBehavior` で代替可。
+### 使っているもの
+
+| シンボル | 用途 | 解決方法 | 代替の公開 API |
+|---|---|---|---|
+| `_AXUIElementGetWindow` | AX ウィンドウ要素 → `CGWindowID` | `@_silgen_name` | 無し（AX と CG を突き合わせる唯一の手段） |
+| `GetProcessForPID` | pid → `ProcessSerialNumber` | `@_silgen_name` | 無し（Carbon 由来で Swift 未公開） |
+| `_SLPSSetFrontProcessWithOptions` | アプリを前面化（ウィンドウを起点に指定） | `dlsym` | `NSRunningApplication.activate`（アプリ単位まで） |
+| `SLPSPostEventRecordTo` | 合成クリックを流してキーウィンドウを確定 | `dlsym` | 無し |
+
+**解決方法は所在で分ける。** 前 2 つは ApplicationServices / CoreServices に同梱されているので
+`@_silgen_name` の宣言だけで通常のリンクが通る。後ろ 2 つは
+`/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight` にあり、`@_silgen_name` にすると
+private framework の明示リンクが要るうえ、**シンボルが消えた OS では起動そのものが失敗する**。
+`dlopen` + `dlsym` なら解決に失敗しても nil が返るだけなので、公開 API へフォールバックできる。
+
+`WM.focus` は `_SLPSSetFrontProcessWithOptions` でアプリを前面化した後、**座標が NaN（コンテンツ外）の
+マウス押下/離上イベント**を `SLPSPostEventRecordTo` で直接届ける。WindowServer は「そのウィンドウが
+クリックされた」と解釈してキーウィンドウを切り替えるが、座標が実コンテンツ上に無いのでアプリ側の
+クリック処理は発火しない。`AXRaise` だけでは「アプリは前面に来たが別のウィンドウがキーのまま」という
+取りこぼしが起きるため、この 2 段構えにしている。
+
+イベントレコードのバイト配置は `WindowManagerCore.KeyWindowEventRecord` に純ロジックとして
+切り出してあり、Linux 上のユニットテストで固定されている。
+
+> ⚠️ private シンボルは OS アップデートで予告なく壊れうる。`WM.focus` は
+> `_SLPSSetFrontProcessWithOptions` が解決できない／失敗した場合、
+> `NSRunningApplication.activate` へ落ちる（アプリ単位のフォーカスまでは効く）。
+
+### まだ使っていないもの（Spaces / Mission Control）
+
+`SLSMainConnectionID`, `SLSGetActiveSpace`, `SLSCopyManagedDisplaySpaces`,
+`SLSCopySpacesForWindows`, `SLSCopyWindowsWithOptionsAndTags`,
+`SLSTransactionCreate` / `SLSTransactionMoveWindowWithGroup`, `SLSRegisterNotifyProc` など。
+`/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight` を `dlopen` + `dlsym` で引く。
+
+これらを入れると「今どの Space か」「この窓はどの Space か」が取れ、複数ウィンドウの移動を
+1 コミットにまとめてチラつきを消せる。検討状況は
+[OmniWM から借りるもの]({{ '/from-omniwm' | relative_url }}) を参照。
+
+> なお **「窓を別 Space へ移す」API はどこも使っていない**（OmniWM も含む）。仮想ワークスペースは
+> 画面外退避で実現するのが現実解。自アプリのウィンドウだけなら公式の
+> `NSWindow.collectionBehavior` で代替可。
 
 ---
 
@@ -257,9 +323,10 @@ nav_order: 1
 | Ruby 呼び出し | Swift 実装 | 種別 |
 |---|---|---|
 | `WM.windows` → `[{id:, pid:, app:, title:, x:, y:, w:, h:, on_screen:}]` | CGWindowList + AX 突合 | 取得 |
+| `WM.set_frame(window_id, x, y, w, h)` | AX `kAXPositionAttribute` / `kAXSizeAttribute` を 1 往復で設定（`AXEnhancedUserInterface` を退避） | 操作 |
 | `WM.move(window_id, x, y)` | AX `kAXPositionAttribute` 設定 | 操作 |
 | `WM.resize(window_id, w, h)` | AX `kAXSizeAttribute` 設定 | 操作 |
-| `WM.raise(window_id)` | AX `kAXRaiseAction` | 操作 |
+| `WM.focus(window_id)` | `_SLPSSetFrontProcessWithOptions` + `SLPSPostEventRecordTo` + AX `kAXRaiseAction` | 操作 |
 | `WM.minimize(window_id, bool)` | AX `kAXMinimizedAttribute` | 操作 |
 | `WM.focused_window` | AX `kAXFocusedWindowAttribute` | 取得 |
 | `WM.apps` | NSWorkspace.runningApplications | 取得 |

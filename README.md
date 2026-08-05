@@ -24,6 +24,8 @@ Ruby で挙動を記述・ホットリロードできる、Swift 製の macOS �
 WindowManager.app (AppKit, メニューバー常駐) … macOS 専用ターゲット
 ├─ Native (Swift)            … AX / CGWindowList / NSScreen / NSWorkspace / CGEvent タップ
 │    ├─ RpcBridge            … JSON-RPC method → ネイティブ API 呼び出し
+│    ├─ AXThreadPool         … pid ごとの専用スレッドで AX を実行（タイムアウト付き）
+│    ├─ PrivateAPI           … _AXUIElementGetWindow / SLPS 系 private シンボルの宣言
 │    └─ Geometry             … NSScreen 寸法を取り出し GeometryMath に反転を委譲
 ├─ RubyVM (WasmKit)          … ruby.wasm を実行。eval / キーディスパッチ
 └─ Resources
@@ -34,8 +36,14 @@ WindowManager.app (AppKit, メニューバー常駐) … macOS 専用ターゲ�
 WindowManagerCore (Swift) … Apple 非依存・クロスプラットフォーム（Linux でテスト可）
 ├─ RpcChannel               … fd 3 上の同期 JSON-RPC のフレーミング（dispatcher 注入）
 ├─ RpcProtocol              … リクエストのパース / 応答整形 / 引数の型強制
-└─ GeometryMath             … bottom-left ⇄ top-left 座標反転の純ロジック
+├─ GeometryMath             … bottom-left ⇄ top-left 座標反転の純ロジック
+└─ KeyWindowEventRecord     … キーウィンドウ確定に使う合成イベントのバイト配置
 ```
+
+**AX 呼び出しはメインスレッドで直接叩かない。** Accessibility の各 API は対象アプリへの同期 IPC
+なので、相手がハングしていれば呼び出し側が数秒ブロックされる。`AXThreadPool` が pid ごとに
+RunLoop 付きスレッドを持ち、200ms のタイムアウトで打ち切る。これにより**アプリ 1 つの
+ハングでウィンドウマネージャ全体（キーハンドラを含む）が止まることはない**。
 
 macOS 固有のソースは `#if canImport(AppKit)` で囲ってあり、Linux ではコア層と
 実行ファイルのスタブだけがビルドされる。これにより**プラットフォーム非依存の
@@ -91,7 +99,7 @@ swift test    # WindowManagerCoreTests を実行（Linux / macOS 双方で可）
 
 CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）は 2 段構成:
 
-- **linux-test**: `swift:6.0` コンテナでコア層を `swift test`（21 ケース）。
+- **linux-test**: `swift:6.0` コンテナでコア層を `swift test`（29 ケース）。
 - **macos-build**: macOS で `swift build`（WasmKit/ruby.wasm 連携の**コンパイル**を検証）。
   ruby.wasm の評価エントリ呼び出し（`RubyVM.swift` の `TODO(on-mac)`）の**動作**確認は実機で別途行う。
 
@@ -144,10 +152,14 @@ wmrc reload              # => reloaded ~/.wmrc.rb
 この環境（Linux）では macOS バイナリをビルド・実行できないため、**未検証**の箇所がある:
 
 - ✅ **完成・Linux でテスト済み**: コア層 `WindowManagerCore`
-  (`RpcChannel`/`RpcProtocol`/`GeometryMath`) を `WindowManagerCoreTests` で検証（CI の linux-test）。
+  (`RpcChannel`/`RpcProtocol`/`GeometryMath`/`KeyWindowEventRecord`) を
+  `WindowManagerCoreTests` で検証（CI の linux-test）。
 - ✅ **完成・レビュー可**: OS API インベントリ、ネイティブ Swift ラッパ
-  (`WindowAPI`/`ScreenAPI`/`AppAPI`/`EventTap`/`Permissions`)、RPC ディスパッチ(`RpcBridge`)、
-  Ruby ライブラリ(`wm.rb`)、メニューバー UI、バンドル化。
+  (`WindowAPI`/`ScreenAPI`/`AppAPI`/`EventTap`/`Permissions`/`AXThreadPool`/`PrivateAPI`)、
+  RPC ディスパッチ(`RpcBridge`)、Ruby ライブラリ(`wm.rb`)、メニューバー UI、バンドル化。
+- 🚧 **macOS 実機での確認が必要（今回追加分）**: AX のタイムアウト値（200ms）が実運用で妥当か、
+  `AXEnhancedUserInterface` の退避が対象アプリで効くか、`SLPS` 経由のフォーカスが
+  複数ウィンドウのアプリで狙いどおり効くか。
 - 🚧 **macOS 実機での確定が必要**（`RubyVM.swift` 内に明記）:
   1. WasmKit の現行版 API シグネチャ（`Engine`/`Store`/`Imports`/`Function`/`Caller`）に合わせた
      インスタンス化と、`fd_write`/`fd_read` フックの実装。

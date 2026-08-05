@@ -84,10 +84,26 @@ module WM
 
     def move(window_id, x, y)   = call("move", window_id, x, y)
     def resize(window_id, w, h) = call("resize", window_id, w, h)
-    def raise_window(window_id) = call("raise", window_id)
     def minimize(window_id, flag = true) = call("minimize", window_id, flag)
     def activate(pid)           = call("activate", pid)
     def hide_app(pid)           = call("hide_app", pid)
+
+    # 位置とサイズをまとめて当てる。move + resize を別々に呼ぶより**常に望ましい**:
+    #   - AX 往復が 1 回で済む（レイアウト敷き直しが目に見えて速くなる）
+    #   - 「移動 → リサイズ → 再度移動」の順で当てるので、リサイズ時にディスプレイ境界へ
+    #     押し戻される定番の症状を吸収できる
+    #   - アプリ側の遅延適用（AXEnhancedUserInterface）を書き込みの間だけ無効化する
+    # 戻り値は**実際に落ち着いた矩形** { "x"=>, "y"=>, "w"=>, "h"=> }。
+    # アプリの最小サイズ制約などで要求どおりにならないことがあるので、
+    # 敷き詰めの検証に使える。解決できなかった場合（無応答・ウィンドウ消失）は nil。
+    def set_frame(window_id, x, y, w, h) = call("set_frame", window_id, x, y, w, h)
+
+    # 指定ウィンドウへフォーカスを移す。アプリの前面化・キーウィンドウの確定・
+    # 同一アプリ内の重なり順までを 1 回で行う（activate + raise を自前で組む必要はない）。
+    def focus(window_id) = call("focus", window_id)
+
+    # 旧名。focus と同じ（かつては AXRaise だけを撃っていた）。
+    alias_method :raise_window, :focus
 
     # --- 永続ストレージ（ホスト側 JSON ファイル）----------------------------
     # 再起動をまたいで残る KV ストア。value は JSON 化可能な値（配列/ハッシュ/数値/文字列）。
@@ -97,14 +113,14 @@ module WM
 
     # 便利関数: ウィンドウを指定スクリーンの可視領域に対する割合で配置する。
     # 例: tile(win_id, 0.0, 0.0, 0.5, 1.0) で左半分。
+    # 戻り値は set_frame と同じ（実際に落ち着いた矩形、失敗時は nil）。
     def tile(window_id, fx, fy, fw, fh, screen: screens.first)
       return unless screen
       x = screen["visible_x"] + screen["visible_w"] * fx
       y = screen["visible_y"] + screen["visible_h"] * fy
       w = screen["visible_w"] * fw
       h = screen["visible_h"] * fh
-      move(window_id, x, y)
-      resize(window_id, w, h)
+      set_frame(window_id, x, y, w, h)
     end
 
     # --- キーイベント DSL（Part B-3）---------------------------------------
