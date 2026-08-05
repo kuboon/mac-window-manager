@@ -261,12 +261,18 @@ RunLoop 付きの専用スレッドを持ち、AX 呼び出しはすべてそこ
 
 ### 使っているもの
 
-| シンボル | 用途 | 代替の公開 API |
-|---|---|---|
-| `_AXUIElementGetWindow` | AX ウィンドウ要素 → `CGWindowID` | 無し（AX と CG を突き合わせる唯一の手段） |
-| `_SLPSSetFrontProcessWithOptions` | アプリを前面化（ウィンドウを起点に指定） | `NSRunningApplication.activate`（アプリ単位まで） |
-| `SLPSPostEventRecordTo` | 合成クリックを流してキーウィンドウを確定 | 無し |
-| `GetProcessForPID` | pid → `ProcessSerialNumber` | 無し（Carbon 由来で Swift 未公開） |
+| シンボル | 用途 | 解決方法 | 代替の公開 API |
+|---|---|---|---|
+| `_AXUIElementGetWindow` | AX ウィンドウ要素 → `CGWindowID` | `@_silgen_name` | 無し（AX と CG を突き合わせる唯一の手段） |
+| `GetProcessForPID` | pid → `ProcessSerialNumber` | `@_silgen_name` | 無し（Carbon 由来で Swift 未公開） |
+| `_SLPSSetFrontProcessWithOptions` | アプリを前面化（ウィンドウを起点に指定） | `dlsym` | `NSRunningApplication.activate`（アプリ単位まで） |
+| `SLPSPostEventRecordTo` | 合成クリックを流してキーウィンドウを確定 | `dlsym` | 無し |
+
+**解決方法は所在で分ける。** 前 2 つは ApplicationServices / CoreServices に同梱されているので
+`@_silgen_name` の宣言だけで通常のリンクが通る。後ろ 2 つは
+`/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight` にあり、`@_silgen_name` にすると
+private framework の明示リンクが要るうえ、**シンボルが消えた OS では起動そのものが失敗する**。
+`dlopen` + `dlsym` なら解決に失敗しても nil が返るだけなので、公開 API へフォールバックできる。
 
 `WM.focus` は `_SLPSSetFrontProcessWithOptions` でアプリを前面化した後、**座標が NaN（コンテンツ外）の
 マウス押下/離上イベント**を `SLPSPostEventRecordTo` で直接届ける。WindowServer は「そのウィンドウが
@@ -278,7 +284,8 @@ RunLoop 付きの専用スレッドを持ち、AX 呼び出しはすべてそこ
 切り出してあり、Linux 上のユニットテストで固定されている。
 
 > ⚠️ private シンボルは OS アップデートで予告なく壊れうる。`WM.focus` は
-> `_SLPSSetFrontProcessWithOptions` が失敗したら `NSRunningApplication.activate` へ落ちる。
+> `_SLPSSetFrontProcessWithOptions` が解決できない／失敗した場合、
+> `NSRunningApplication.activate` へ落ちる（アプリ単位のフォーカスまでは効く）。
 
 ### まだ使っていないもの（Spaces / Mission Control）
 
