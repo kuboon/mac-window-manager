@@ -161,8 +161,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Reload config", action: #selector(reloadConfig), keyEquivalent: "r"))
         menu.addItem(NSMenuItem(title: "Edit ~/.wmrc.rb", action: #selector(editConfig), keyEquivalent: "e"))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
+        // terminate(_:) は NSApplication のメソッドなので target は NSApp にする
+        // （self だと応答しないため自動 validation で disabled になる）。
+        let quit = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        menu.addItem(quit)
         statusItem.menu = menu
     }
 
