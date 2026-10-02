@@ -19,8 +19,9 @@ jobs:
     name: Linux (swift test, core)
     runs-on: ubuntu-latest
     container: swift:6.0
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ruby.wasm は容量が大きく未コミット（.gitignore 済み）。SwiftPM は宣言した
       # リソースが存在しないとビルドに失敗するため、空のプレースホルダを置く。
@@ -35,8 +36,9 @@ jobs:
   macos-build:
     name: macOS (build)
     runs-on: macos-14
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Stub ruby.wasm resource
         run: touch Sources/WindowManager/Resources/ruby.wasm
@@ -53,10 +55,11 @@ jobs:
     name: macOS (.app release)
     runs-on: macos-14
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20 # swift build -c release + ruby.wasm 取得を含むため長め
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 実 ruby.wasm（@ruby/3.x-wasm-wasi の ruby+stdlib.wasm）を npm から取得して同梱。
       - name: Fetch ruby.wasm
@@ -71,7 +74,7 @@ jobs:
         run: ditto -c -k --keepParent WindowManager.app WindowManager.app.zip
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: WindowManager-app
           path: WindowManager.app.zip
