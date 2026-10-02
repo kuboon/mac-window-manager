@@ -3,14 +3,8 @@ name: CI
 on:
   push:
     branches: ["**"]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "このタグで GitHub Release を作成し .app を添付（例: v0.1.0）。空ならビルド成果物のみ。"
-        required: false
-        default: ""
 
 jobs:
   # クロスプラットフォームなコア層（WindowManagerCore）を Linux 上でビルド & テストする。
@@ -46,15 +40,55 @@ jobs:
       - name: swift build
         run: swift build
 
+  # バージョンの唯一の置き場は bundle/Info.plist。そこから v<version> を決め、
+  # main への push でその Release がまだ無ければ macos-app を動かす（plist を上げる = リリース）。
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      build: ${{ steps.v.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read version from Info.plist
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r short build < <(python3 - <<'PY'
+          import plistlib
+          d = plistlib.load(open("bundle/Info.plist", "rb"))
+          print(d["CFBundleShortVersionString"], d["CFBundleVersion"])
+          PY
+          )
+          if [ "$short" != "$build" ]; then
+            echo "::error::CFBundleShortVersionString ($short) と CFBundleVersion ($build) が一致しません"
+            exit 1
+          fi
+          tag="v$short"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # 手動実行は常にビルド。main への push は、その Release が未作成のときだけビルド。
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ] \
+               && ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # .app バンドルを実際に組み立てて成果物にする。
-  # - タグ push（v*）: GitHub Release を作成して .app を添付。
-  # - 手動実行（workflow_dispatch）: ワークフロー artifact として吐き出すだけ。
+  # - main への push で Info.plist のバージョンの Release が未作成: Release を作成して .app を添付。
+  # - 手動実行（workflow_dispatch）: artifact を出す。main 上なら既存 Release の .app も差し替える（--clobber）。
   # ※ adhoc 署名のみ（未公証）。他 Mac では初回 右クリック→開く 等が必要。実機での
   #   ウィンドウ操作・権限付与は CI では検証できない（ビルド成果物の提供のみ）。
   macos-app:
     name: macOS (.app release)
+    needs: version
     runs-on: macos-14
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: needs.version.outputs.build == 'true'
     timeout-minutes: 20 # swift build -c release + ruby.wasm 取得を含むため長め
     permissions:
       contents: write
@@ -80,15 +114,15 @@ jobs:
           path: WindowManager.app.zip
           if-no-files-found: error
 
-      # タグ push（v*）、または workflow_dispatch で tag 入力があれば Release を作成・更新する。
-      # 後者は runner 内で gh がタグを作成するため、ローカルからの tag push が不要。
+      # main 上でのみ Release を作成・更新する。タグは gh が runner 内で作成する
+      # （GITHUB_TOKEN 由来のタグは他の workflow を起動しないので二重実行にならない）。
       - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.tag }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           notes=$'WindowManager.app（adhoc 署名 / 未公証）。\n\n初回起動: 右クリック→開く、または\n  xattr -dr com.apple.quarantine WindowManager.app\nアクセシビリティ等の権限はシステム設定で付与してください。'
           gh release create "$TAG" WindowManager.app.zip \
-            --title "$TAG" --notes "$notes" \
+            --target "$GITHUB_SHA" --title "$TAG" --notes "$notes" \
           || gh release upload "$TAG" WindowManager.app.zip --clobber
